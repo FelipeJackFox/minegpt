@@ -1,0 +1,36 @@
+# Data (large files, not committed)
+raw_data/
+processed_data/
+checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tokenizer artifacts
+tokenizer/*.model
+tokenizer/*.vocab
+tokenizer/train_text.txt
+
+# Node
+web/frontend/node_modules/
+web/frontend/.next/
+web/frontend/out/
+
+# Logs
+*.log
+wandb/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
