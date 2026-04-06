@@ -39,7 +39,7 @@ from bs4 import BeautifulSoup
 # ============================================================
 
 WIKI_API = "https://minecraft.wiki/api.php"
-RATE_LIMIT = 1.0
+RATE_LIMIT = 0.2  # MediaWiki has no hard read limit; maxlag=5 handles server load
 
 OUTPUT_DIR = Path(__file__).parent.parent / "raw_data" / "wiki"
 
@@ -73,6 +73,7 @@ def get_all_page_titles() -> list[str]:
         "aplimit": "500",
         "apnamespace": "0",
         "format": "json",
+        "maxlag": "5",
     }
 
     log.info("Obteniendo lista de todos los artículos...")
@@ -83,6 +84,13 @@ def get_all_page_titles() -> list[str]:
         resp = requests.get(WIKI_API, params=params, headers=HEADERS, timeout=30)
         resp.raise_for_status()
         data = resp.json()
+
+        # maxlag: server is overloaded, wait and retry
+        if "error" in data and data["error"].get("code") == "maxlag":
+            wait = int(resp.headers.get("Retry-After", 5))
+            log.warning(f"Server lag, waiting {wait}s...")
+            time.sleep(wait)
+            continue
 
         pages = data.get("query", {}).get("allpages", [])
         titles.extend(p["title"] for p in pages)
@@ -117,6 +125,7 @@ def fetch_article_html(title: str) -> tuple[str, list[dict], bool] | None:
         "format": "json",
         "disabletoc": "true",
         "disableeditsection": "true",
+        "maxlag": "5",
     }
 
     try:
@@ -126,6 +135,17 @@ def fetch_article_html(title: str) -> tuple[str, list[dict], bool] | None:
     except (requests.RequestException, json.JSONDecodeError) as e:
         log.warning(f"Error obteniendo '{title}': {e}")
         return None
+
+    # maxlag: server overloaded, wait and retry once
+    if "error" in data and data["error"].get("code") == "maxlag":
+        wait = int(resp.headers.get("Retry-After", 5))
+        log.warning(f"Server lag on '{title}', waiting {wait}s...")
+        time.sleep(wait)
+        try:
+            resp = requests.get(WIKI_API, params=params, headers=HEADERS, timeout=30)
+            data = resp.json()
+        except Exception:
+            return None
 
     if "error" in data:
         log.debug(f"API error para '{title}': {data['error'].get('info')}")
