@@ -21,6 +21,8 @@ Uso:
     python -m scraper.wiki_scraper --resume
 """
 
+from __future__ import annotations
+
 import json
 import re
 import time

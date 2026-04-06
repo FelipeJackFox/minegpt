@@ -16,6 +16,8 @@ Uso:
     python -m scraper.reddit_scraper --after 2020-01-01 --before 2026-04-01
 """
 
+from __future__ import annotations
+
 import json
 import time
 import argparse
