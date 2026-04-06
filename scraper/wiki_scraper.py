@@ -2,27 +2,27 @@
 wiki_scraper.py — Scraper de minecraft.wiki
 =============================================
 
-Este script extrae artículos de la Minecraft Wiki (minecraft.wiki) usando
-la API de MediaWiki. MediaWiki es el software que usa Wikipedia y muchas
-wikis — expone una API JSON que permite obtener contenido sin parsear HTML.
+Extrae artículos de la Minecraft Wiki usando la API de MediaWiki.
 
-CÓMO FUNCIONA:
-1. Pedimos la lista de TODOS los artículos via la API (allpages)
-2. Para cada artículo, pedimos su contenido en texto plano (extracts)
-3. Guardamos todo en formato JSONL (un JSON por línea)
+FILOSOFÍA: Obtener TODO, limpiar después.
+El scraper solo quita navegación web (navbox, toc, edit links).
+Todo el contenido informativo se mantiene para procesamiento posterior.
 
-NOTA SOBRE LEGALIDAD:
-- El contenido está bajo CC BY-NC-SA 3.0
-- El sitio bloquea bots de IA en robots.txt
-- Este scraper es para uso educativo personal únicamente
-- Respetamos rate limits (1 req/seg mínimo)
+FEATURES:
+- Maneja redirects (ej: "Enchanting" → "Enchantment")
+- Extrae tablas como texto natural + raw por separado
+- Extrae nombres de sonidos como metadata
+- Separa changelogs en archivo aparte con secciones marcadas
+- Resume: puede continuar si se interrumpe
+- Rate limiting respetuoso (1 req/seg)
 
 Uso:
     python -m scraper.wiki_scraper
-    python -m scraper.wiki_scraper --resume    # Continúa desde donde quedó
+    python -m scraper.wiki_scraper --resume
 """
 
 import json
+import re
 import time
 import argparse
 import logging
@@ -37,18 +37,19 @@ from bs4 import BeautifulSoup
 # ============================================================
 
 WIKI_API = "https://minecraft.wiki/api.php"
-RATE_LIMIT = 1.0  # Segundos entre requests
+RATE_LIMIT = 1.0
 
-# Carpeta donde se guardan los datos crudos
 OUTPUT_DIR = Path(__file__).parent.parent / "raw_data" / "wiki"
 
-# User-Agent identificándose honestamente
-USER_AGENT = "MineGPT-Educational-Scraper/1.0 (personal ML learning project; contact: github.com/minegpt)"
-
-# Headers para todas las requests
+USER_AGENT = "MineGPT-Educational-Scraper/1.0 (personal ML learning project)"
 HEADERS = {"User-Agent": USER_AGENT}
 
-# Logging
+# Patrón para detectar changelogs
+CHANGELOG_PATTERN = re.compile(
+    r"^(Java Edition|Bedrock Edition|Pocket Edition|Legacy Console Edition)\s+[\d.]",
+    re.IGNORECASE,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -58,28 +59,17 @@ log = logging.getLogger(__name__)
 
 
 # ============================================================
-# Paso 1: Obtener lista de todos los artículos
+# Obtener lista de todos los artículos
 # ============================================================
-# La API de MediaWiki tiene el módulo "allpages" que lista todos
-# los artículos del wiki. Devuelve máximo 500 por request, así que
-# hay que paginar usando el token "apcontinue".
 
 def get_all_page_titles() -> list[str]:
-    """
-    Obtiene los títulos de TODOS los artículos del wiki.
-
-    Usa el endpoint allpages de la API MediaWiki.
-    Pagina automáticamente hasta obtener todos los títulos.
-
-    Returns:
-        Lista de títulos de artículos (strings)
-    """
+    """Obtiene títulos de TODOS los artículos via API allpages."""
     titles = []
     params = {
         "action": "query",
         "list": "allpages",
-        "aplimit": "500",       # Máximo por request
-        "apnamespace": "0",     # Namespace 0 = artículos (no talk pages, no user pages)
+        "aplimit": "500",
+        "apnamespace": "0",
         "format": "json",
     }
 
@@ -93,13 +83,11 @@ def get_all_page_titles() -> list[str]:
         data = resp.json()
 
         pages = data.get("query", {}).get("allpages", [])
-        batch_titles = [p["title"] for p in pages]
-        titles.extend(batch_titles)
+        titles.extend(p["title"] for p in pages)
 
         page_count += 1
-        log.info(f"  Página {page_count}: +{len(batch_titles)} artículos (total: {len(titles)})")
+        log.info(f"  Página {page_count}: +{len(pages)} artículos (total: {len(titles)})")
 
-        # ¿Hay más páginas? MediaWiki pone "continue" si hay más resultados
         if "continue" in data:
             params["apcontinue"] = data["continue"]["apcontinue"]
         else:
@@ -110,35 +98,23 @@ def get_all_page_titles() -> list[str]:
 
 
 # ============================================================
-# Paso 2: Obtener contenido de un artículo
+# Obtener contenido de un artículo
 # ============================================================
-# Usamos el endpoint "parse" que devuelve el HTML renderizado del artículo.
-# Luego limpiamos el HTML con BeautifulSoup para quedarnos solo con texto.
-#
-# ¿Por qué no usar "extracts" (texto plano directo)?
-# Porque extracts trunca el contenido y pierde estructura.
-# Con "parse" obtenemos el artículo completo.
 
-def get_article_content(title: str) -> dict | None:
+def fetch_article_html(title: str) -> tuple[str, list[dict], bool] | None:
     """
-    Obtiene el contenido completo de un artículo.
-
-    Usa el endpoint "parse" de MediaWiki que devuelve HTML,
-    luego lo limpia a texto plano con BeautifulSoup.
-
-    Args:
-        title: Título del artículo
+    Obtiene el HTML de un artículo.
 
     Returns:
-        Dict con title, text, categories, word_count, o None si falla
+        (html, categories, is_redirect) o None si falla
     """
     params = {
         "action": "parse",
         "page": title,
         "prop": "text|categories",
         "format": "json",
-        "disabletoc": "true",      # No queremos la tabla de contenidos
-        "disableeditsection": "true",  # No queremos los links de [edit]
+        "disabletoc": "true",
+        "disableeditsection": "true",
     }
 
     try:
@@ -149,124 +125,190 @@ def get_article_content(title: str) -> dict | None:
         log.warning(f"Error obteniendo '{title}': {e}")
         return None
 
-    # La API puede devolver error si la página no existe o es redirect
     if "error" in data:
-        log.debug(f"API error para '{title}': {data['error'].get('info', 'unknown')}")
+        log.debug(f"API error para '{title}': {data['error'].get('info')}")
         return None
 
     parse_data = data.get("parse", {})
-
-    # --- Extraer HTML y limpiarlo ---
     html = parse_data.get("text", {}).get("*", "")
-    text = clean_html(html)
-
-    # --- Extraer categorías ---
     categories = [
         cat["*"] for cat in parse_data.get("categories", [])
-        if not cat.get("hidden")  # Ignorar categorías ocultas (de mantenimiento)
+        if not cat.get("hidden")
     ]
 
-    word_count = len(text.split())
+    # Detectar redirects
+    is_redirect = 'class="redirectMsg"' in html
 
-    return {
-        "title": title,
-        "text": text,
-        "categories": categories,
-        "word_count": word_count,
-        "scraped_at": datetime.now().isoformat(),
-    }
+    return html, categories, is_redirect
 
 
-def clean_html(html: str) -> str:
-    """
-    Convierte HTML del wiki a texto plano limpio.
-
-    Proceso:
-    1. Parsear HTML con BeautifulSoup
-    2. Eliminar elementos que no aportan contenido textual
-       (tablas de navegación, infoboxes, scripts, estilos)
-    3. Extraer texto plano
-    4. Limpiar whitespace
-
-    Args:
-        html: HTML crudo del artículo
-
-    Returns:
-        Texto plano limpio
-    """
+def resolve_redirect(html: str) -> str | None:
+    """Extrae el título destino de un redirect."""
     soup = BeautifulSoup(html, "lxml")
-
-    # Eliminar elementos que no son contenido útil para entrenamiento
-    for element in soup.find_all([
-        "script", "style",          # Código
-        "sup",                       # Notas al pie / referencias
-        "table",                     # Tablas (se procesan aparte en crafteos.py)
-    ]):
-        element.decompose()
-
-    # Eliminar elementos por clase CSS (navegación, avisos, etc.)
-    for class_name in [
-        "navbox",           # Cajas de navegación al final
-        "mw-editsection",   # Links de [edit]
-        "reference",        # Referencias
-        "noprint",          # Elementos ocultos en impresión
-        "mbox",             # Message boxes (avisos, stubs, etc.)
-        "hatnote",          # "For other uses, see..."
-        "toc",              # Tabla de contenidos
-        "infobox",          # Infoboxes laterales
-        "sidebar",          # Barras laterales
-    ]:
-        for el in soup.find_all(class_=class_name):
-            el.decompose()
-
-    # Extraer texto plano
-    text = soup.get_text(separator="\n")
-
-    # Limpiar whitespace excesivo
-    lines = []
-    for line in text.split("\n"):
-        line = line.strip()
-        if line:
-            lines.append(line)
-
-    return "\n".join(lines)
+    redirect_div = soup.find(class_="redirectMsg")
+    if redirect_div:
+        link = redirect_div.find("a")
+        if link and link.get("title"):
+            return link["title"]
+    return None
 
 
 # ============================================================
-# Paso 3: Extraer tablas de crafting (para crafteos.py)
+# Procesamiento de HTML
 # ============================================================
 
-def extract_crafting_tables(html: str, title: str) -> list[dict]:
-    """
-    Extrae tablas de crafting del HTML de un artículo.
-    Estas se guardan por separado para generar datos estructurados.
-
-    Args:
-        html: HTML crudo del artículo
-        title: Título del artículo (para contexto)
-
-    Returns:
-        Lista de dicts con datos de crafting encontrados
-    """
-    soup = BeautifulSoup(html, "lxml")
-    crafting_data = []
-
-    # Buscar tablas con clase "wikitable" que contengan info de crafting
+def extract_tables_raw(soup: BeautifulSoup, title: str) -> list[dict]:
+    """Extrae tablas wikitable como datos raw."""
+    tables = []
     for table in soup.find_all("table", class_="wikitable"):
-        # Extraer texto de cada celda
         rows = []
         for tr in table.find_all("tr"):
             cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
             if cells:
                 rows.append(cells)
-
         if rows:
-            crafting_data.append({
-                "article": title,
-                "table_rows": rows,
-            })
+            tables.append({"article": title, "rows": rows})
+    return tables
 
-    return crafting_data
+
+def table_to_text(table_tag) -> str:
+    """Convierte una tabla HTML a texto natural."""
+    rows = []
+    for tr in table_tag.find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+        if cells:
+            rows.append(cells)
+
+    if not rows:
+        return ""
+
+    # Si tiene header row, usarla como contexto
+    if len(rows) >= 2:
+        headers = rows[0]
+        lines = []
+        for row in rows[1:]:
+            parts = []
+            for i, cell in enumerate(row):
+                if cell and i < len(headers) and headers[i]:
+                    parts.append(f"{headers[i]}: {cell}")
+                elif cell:
+                    parts.append(cell)
+            if parts:
+                lines.append(", ".join(parts))
+        return "\n".join(lines)
+    else:
+        return " | ".join(rows[0])
+
+
+def extract_sounds(soup: BeautifulSoup) -> list[str]:
+    """Extrae nombres de archivos de audio."""
+    sounds = []
+    for audio in soup.find_all("audio"):
+        title = audio.get("data-mwtitle", "")
+        if title:
+            # "Creeper_death.ogg" → "Creeper death"
+            name = title.replace(".ogg", "").replace("_", " ")
+            sounds.append(name)
+    return sounds
+
+
+def process_html(html: str, title: str) -> tuple[str, list[dict], list[str]]:
+    """
+    Procesa HTML del wiki. Obtiene TODO excepto navegación web.
+
+    Returns:
+        (texto_limpio, tablas_raw, sonidos)
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    # --- Extraer datos ANTES de modificar el DOM ---
+    tables_raw = extract_tables_raw(soup, title)
+    sounds = extract_sounds(soup)
+
+    # --- QUITAR: navegación web (0% contenido informativo) ---
+    for element in soup.find_all(["script", "style"]):
+        element.decompose()
+
+    for class_name in [
+        "navbox",           # Navegación entre artículos
+        "mw-editsection",   # Links de [edit]
+        "toc",              # Tabla de contenidos
+        "navigation-not-searchable",  # Más navegación
+    ]:
+        for el in soup.find_all(class_=class_name):
+            el.decompose()
+
+    # --- Eliminar navbox tables (son tablas de navegación, no datos) ---
+    for table in soup.find_all("table", class_="navbox"):
+        table.decompose()
+
+    # --- Convertir wikitables a texto natural ---
+    for table in soup.find_all("table", class_="wikitable"):
+        text = table_to_text(table)
+        if text:
+            new_tag = soup.new_tag("p")
+            new_tag.string = text
+            table.replace_with(new_tag)
+        else:
+            table.decompose()
+
+    # --- Limpiar sprites/imágenes que no aportan texto ---
+    for el in soup.find_all(class_="sprite-file"):
+        el.decompose()
+    for el in soup.find_all(class_="pixel-image"):
+        # Solo quitar si no tiene texto
+        if not el.get_text(strip=True):
+            el.decompose()
+
+    # --- Quitar audio players (ya extrajimos los nombres) ---
+    for el in soup.find_all(class_="sound"):
+        el.decompose()
+
+    # --- Extraer texto ---
+    text = soup.get_text(separator="\n")
+
+    # Normalización barata
+    lines = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if line:
+            lines.append(line)
+    text = "\n".join(lines)
+
+    # Colapsar whitespace múltiple
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip(), tables_raw, sounds
+
+
+def detect_changelog_sections(text: str) -> dict:
+    """
+    Para artículos de changelog, marca las secciones.
+
+    Returns:
+        {"player_facing": "...", "technical": "...", "full": "..."}
+    """
+    lines = text.split("\n")
+    sections = {"player_facing": [], "technical": [], "current": "player_facing"}
+
+    for line in lines:
+        lower = line.lower().strip()
+        if lower in ("technical", "technical changes", "technical additions"):
+            sections["current"] = "technical"
+        elif lower in ("fixes", "video", "trivia", "references", "navigation"):
+            sections["current"] = "other"
+
+        if sections["current"] == "player_facing":
+            sections["player_facing"].append(line)
+        elif sections["current"] == "technical":
+            sections["technical"].append(line)
+
+    return {
+        "player_facing": "\n".join(sections["player_facing"]).strip(),
+        "technical": "\n".join(sections["technical"]).strip(),
+        "full": text,
+    }
 
 
 # ============================================================
@@ -274,109 +316,145 @@ def extract_crafting_tables(html: str, title: str) -> list[dict]:
 # ============================================================
 
 def load_progress(progress_file: Path) -> set[str]:
-    """Carga títulos ya scrapeados (para resume)."""
     if progress_file.exists():
-        return set(progress_file.read_text(encoding="utf-8").strip().split("\n"))
+        lines = progress_file.read_text(encoding="utf-8").strip().split("\n")
+        return set(l for l in lines if l)
     return set()
 
 
 def save_progress(progress_file: Path, title: str):
-    """Registra un título como scrapeado."""
     with open(progress_file, "a", encoding="utf-8") as f:
         f.write(title + "\n")
 
 
 def run(resume: bool = False):
-    """
-    Ejecuta el scraping completo.
-
-    Args:
-        resume: Si True, continúa desde donde se quedó la última vez
-    """
+    """Ejecuta el scraping completo."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     articles_file = OUTPUT_DIR / "articles.jsonl"
-    crafting_file = OUTPUT_DIR / "crafting_tables.jsonl"
+    tables_file = OUTPUT_DIR / "tables_raw.jsonl"
+    changelogs_file = OUTPUT_DIR / "changelogs.jsonl"
+    redirects_file = OUTPUT_DIR / "redirects.jsonl"
     progress_file = OUTPUT_DIR / ".progress"
-    stubs_file = OUTPUT_DIR / "stubs.jsonl"  # Artículos cortos, para evaluar después
 
-    # --- Obtener lista de artículos ---
+    # Obtener lista de artículos
     titles = get_all_page_titles()
 
-    # --- Filtrar ya scrapeados si es resume ---
+    # Resume
     done = load_progress(progress_file) if resume else set()
     if done:
-        log.info(f"Resumiendo: {len(done)} artículos ya scrapeados, {len(titles) - len(done)} pendientes")
+        log.info(f"Resumiendo: {len(done)} ya procesados, {len(titles) - len(done)} pendientes")
 
-    # --- Stats ---
     stats = {
         "total_titles": len(titles),
-        "scraped": len(done),
+        "processed": len(done),
+        "articles": 0,
+        "changelogs": 0,
+        "redirects": 0,
         "errors": 0,
-        "stubs": 0,
         "total_words": 0,
+        "total_tables": 0,
     }
 
-    # --- Abrir archivos de salida ---
     mode = "a" if resume else "w"
     with (
         open(articles_file, mode, encoding="utf-8") as f_articles,
-        open(crafting_file, mode, encoding="utf-8") as f_crafting,
-        open(stubs_file, mode, encoding="utf-8") as f_stubs,
+        open(tables_file, mode, encoding="utf-8") as f_tables,
+        open(changelogs_file, mode, encoding="utf-8") as f_changelogs,
+        open(redirects_file, mode, encoding="utf-8") as f_redirects,
     ):
-        for i, title in enumerate(titles):
+        for title in titles:
             if title in done:
                 continue
 
-            # Rate limiting
             time.sleep(RATE_LIMIT)
 
-            # Obtener contenido
-            article = get_article_content(title)
-
-            if article is None:
+            result = fetch_article_html(title)
+            if result is None:
                 stats["errors"] += 1
                 save_progress(progress_file, title)
                 continue
 
-            # Clasificar: stub o artículo completo
-            if article["word_count"] < 100:
-                # Guardar en archivo de stubs para evaluar después
-                # (NO descartamos — los evaluamos en la fase de limpieza)
-                f_stubs.write(json.dumps(article, ensure_ascii=False) + "\n")
-                stats["stubs"] += 1
+            html, categories, is_redirect = result
+
+            # Manejar redirects
+            if is_redirect:
+                redirect_target = resolve_redirect(html)
+                f_redirects.write(json.dumps({
+                    "from": title,
+                    "to": redirect_target,
+                }, ensure_ascii=False) + "\n")
+                stats["redirects"] += 1
+                save_progress(progress_file, title)
+
+                # Descargar el artículo destino si no lo hemos visto
+                if redirect_target and redirect_target not in done:
+                    time.sleep(RATE_LIMIT)
+                    result2 = fetch_article_html(redirect_target)
+                    if result2:
+                        html, categories, _ = result2
+                        title = redirect_target  # Usar el título real
+                    else:
+                        stats["processed"] += 1
+                        continue
+                else:
+                    stats["processed"] += 1
+                    continue
+
+            # Procesar HTML
+            text, tables_raw, sounds = process_html(html, title)
+
+            # Guardar tablas raw
+            for table in tables_raw:
+                f_tables.write(json.dumps(table, ensure_ascii=False) + "\n")
+                stats["total_tables"] += 1
+
+            # Armar artículo
+            article = {
+                "title": title,
+                "text": text,
+                "categories": categories,
+                "sounds": sounds if sounds else None,
+                "word_count": len(text.split()),
+                "scraped_at": datetime.now().isoformat(),
+            }
+
+            # Separar changelogs
+            if CHANGELOG_PATTERN.match(title):
+                sections = detect_changelog_sections(text)
+                article["changelog_sections"] = {
+                    "player_facing": sections["player_facing"],
+                    "technical": sections["technical"],
+                }
+                f_changelogs.write(json.dumps(article, ensure_ascii=False) + "\n")
+                stats["changelogs"] += 1
             else:
                 f_articles.write(json.dumps(article, ensure_ascii=False) + "\n")
-                stats["total_words"] += article["word_count"]
+                stats["articles"] += 1
 
-            # Registrar progreso
+            stats["total_words"] += article["word_count"]
             save_progress(progress_file, title)
-            stats["scraped"] += 1
+            stats["processed"] += 1
 
-            # Log periódico
-            if stats["scraped"] % 100 == 0:
+            if stats["processed"] % 100 == 0:
                 log.info(
-                    f"Progreso: {stats['scraped']}/{stats['total_titles']} artículos | "
-                    f"{stats['total_words']:,} palabras | "
-                    f"{stats['stubs']} stubs | "
-                    f"{stats['errors']} errores"
+                    f"Progreso: {stats['processed']}/{stats['total_titles']} | "
+                    f"{stats['articles']} artículos | {stats['changelogs']} changelogs | "
+                    f"{stats['redirects']} redirects | {stats['errors']} errores | "
+                    f"{stats['total_words']:,} palabras"
                 )
 
-    # --- Reporte final ---
+    # Reporte final
     log.info("=" * 60)
     log.info("SCRAPING COMPLETADO")
-    log.info(f"  Artículos scrapeados: {stats['scraped']}")
-    log.info(f"  Artículos completos:  {stats['scraped'] - stats['stubs'] - stats['errors']}")
-    log.info(f"  Stubs (< 100 palabras): {stats['stubs']} (guardados en stubs.jsonl para revisión)")
-    log.info(f"  Errores:              {stats['errors']}")
-    log.info(f"  Total de palabras:    {stats['total_words']:,}")
-    log.info(f"  Archivos generados:")
-    log.info(f"    {articles_file}")
-    log.info(f"    {stubs_file}")
-    log.info(f"    {crafting_file}")
+    log.info(f"  Artículos: {stats['articles']}")
+    log.info(f"  Changelogs: {stats['changelogs']}")
+    log.info(f"  Redirects: {stats['redirects']}")
+    log.info(f"  Errores: {stats['errors']}")
+    log.info(f"  Tablas extraídas: {stats['total_tables']}")
+    log.info(f"  Total palabras: {stats['total_words']:,}")
     log.info("=" * 60)
 
-    # Guardar stats como JSON
     stats_file = OUTPUT_DIR / "scraping_stats.json"
     with open(stats_file, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)

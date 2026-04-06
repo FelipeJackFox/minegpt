@@ -2,26 +2,18 @@
 reddit_scraper.py — Descarga de r/Minecraft via Arctic Shift
 =============================================================
 
-Arctic Shift es un proyecto comunitario que mantiene dumps históricos
-de Reddit. Expone una API pública que permite buscar posts y comentarios
-por subreddit, fecha, y otros filtros.
+Descarga posts y comentarios de r/Minecraft usando la API de Arctic Shift.
+Filosofía: obtener TODO, limpiar después.
 
-CÓMO FUNCIONA:
-1. Usamos la API de Arctic Shift (NO la API oficial de Reddit)
-2. Paginamos cronológicamente (sort=asc, after=last_created_utc)
-3. Descargamos tanto posts (submissions) como comentarios
-4. Filtramos por calidad (score > threshold, texto suficiente)
-5. Guardamos en JSONL
-
-¿POR QUÉ ARCTIC SHIFT Y NO LA API DE REDDIT?
-- Reddit cobra por su API y prohíbe uso para ML training
-- Arctic Shift tiene datos históricos gratuitos para uso científico
-- La API es más simple y no requiere autenticación
+FEATURES:
+- Checkpointing granular: escribe incrementalmente, resume desde último timestamp
+- Filtra bots conocidos
+- Guarda TODO (incluidos posts sin texto) — el filtrado se hace en limpieza
 
 Uso:
     python -m scraper.reddit_scraper
     python -m scraper.reddit_scraper --resume
-    python -m scraper.reddit_scraper --after 2023-01-01 --before 2025-01-01
+    python -m scraper.reddit_scraper --after 2020-01-01 --before 2026-04-01
 """
 
 import json
@@ -29,7 +21,6 @@ import time
 import argparse
 import logging
 from pathlib import Path
-from datetime import datetime
 
 import requests
 
@@ -39,19 +30,20 @@ import requests
 
 API_BASE = "https://arctic-shift.photon-reddit.com/api"
 SUBREDDIT = "Minecraft"
+RATE_LIMIT = 0.5
 
-# Filtros de calidad
-MIN_SCORE_POSTS = 10        # Solo posts con al menos 10 upvotes
-MIN_SCORE_COMMENTS = 10     # Solo comentarios con al menos 10 upvotes
-MIN_TEXT_LENGTH = 50         # Mínimo 50 caracteres de texto
-
-# Rate limiting (Arctic Shift es gratuito, sé respetuoso)
-RATE_LIMIT = 0.5  # Segundos entre requests
-
-# Output
 OUTPUT_DIR = Path(__file__).parent.parent / "raw_data" / "reddit"
 
-# Logging
+# Bots conocidos a filtrar
+BOTS = {
+    "[deleted]", "AutoModerator", "RemindMeBot",
+    "WikiTextBot", "SaveVideo", "Sneakpeekbot",
+    "RepostSleuthBot", "GifReversingBot", "haikusbot",
+    "sub_doesnt_exist_bot", "LinkifyBot", "HelperBot_",
+    "TotesMessenger", "BotDefense", "B0tRank",
+    "DownloadVideo", "savevideobot", "VideoTrim",
+}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -61,161 +53,193 @@ log = logging.getLogger(__name__)
 
 
 # ============================================================
-# Funciones de descarga
+# Checkpointing
 # ============================================================
 
-def fetch_posts(after: str = "2015-01-01", before: str = "2026-04-01") -> list[dict]:
+def load_progress(progress_file: Path) -> str | None:
+    """Lee el último timestamp procesado."""
+    if progress_file.exists():
+        return progress_file.read_text(encoding="utf-8").strip()
+    return None
+
+
+def save_progress(progress_file: Path, timestamp: str):
+    """Guarda el último timestamp procesado."""
+    progress_file.write_text(str(timestamp), encoding="utf-8")
+
+
+# ============================================================
+# Descarga de posts
+# ============================================================
+
+def fetch_posts(after: str, before: str, resume: bool = False):
     """
-    Descarga TODOS los posts de r/Minecraft en un rango de fechas.
-
-    Usa paginación cronológica: sort=asc, y el created_utc del último
-    resultado como cursor para la siguiente página.
-
-    Args:
-        after: Fecha de inicio (YYYY-MM-DD)
-        before: Fecha de fin (YYYY-MM-DD)
-
-    Returns:
-        Lista de posts filtrados
+    Descarga TODOS los posts de r/Minecraft incrementalmente.
+    Escribe directamente al archivo JSONL sin acumular en memoria.
     """
-    posts = []
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    posts_file = OUTPUT_DIR / "posts.jsonl"
+    progress_file = OUTPUT_DIR / ".progress_posts"
+
+    # Resume: leer último timestamp
     current_after = after
+    mode = "w"
+    if resume:
+        saved = load_progress(progress_file)
+        if saved:
+            current_after = saved
+            mode = "a"
+            log.info(f"Resumiendo posts desde {current_after}")
+
     page = 0
+    total = 0
+    total_saved = 0
 
-    log.info(f"Descargando posts de r/{SUBREDDIT} ({after} → {before})...")
+    with open(posts_file, mode, encoding="utf-8") as f:
+        while True:
+            time.sleep(RATE_LIMIT)
 
-    while True:
-        time.sleep(RATE_LIMIT)
+            params = {
+                "subreddit": SUBREDDIT,
+                "after": current_after,
+                "before": before,
+                "sort": "asc",
+                "limit": 100,
+            }
 
-        params = {
-            "subreddit": SUBREDDIT,
-            "after": current_after,
-            "before": before,
-            "sort": "asc",
-            "limit": 100,
-        }
+            try:
+                resp = requests.get(f"{API_BASE}/posts/search", params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+            except (requests.RequestException, json.JSONDecodeError) as e:
+                log.warning(f"Error (page {page}): {e}. Reintentando en 5s...")
+                time.sleep(5)
+                continue
 
-        try:
-            resp = requests.get(f"{API_BASE}/posts/search", params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, json.JSONDecodeError) as e:
-            log.warning(f"Error en request (page {page}): {e}. Reintentando en 5s...")
-            time.sleep(5)
-            continue
+            batch = data.get("data", [])
+            if not batch:
+                break
 
-        batch = data.get("data", [])
-        if not batch:
-            break
+            for post in batch:
+                author = post.get("author", "")
+                if author in BOTS:
+                    continue
 
-        # Filtrar por calidad
-        for post in batch:
-            score = post.get("score", 0)
-            selftext = post.get("selftext", "") or ""
-            title = post.get("title", "") or ""
-
-            # Queremos posts con texto sustancial (no solo links/imágenes)
-            if score >= MIN_SCORE_POSTS and len(selftext) >= MIN_TEXT_LENGTH:
-                posts.append({
-                    "title": title,
-                    "text": selftext,
-                    "score": score,
+                entry = {
+                    "title": post.get("title", ""),
+                    "text": post.get("selftext", "") or "",
+                    "score": post.get("score", 0),
                     "created_utc": post.get("created_utc"),
                     "num_comments": post.get("num_comments", 0),
                     "flair": post.get("link_flair_text", ""),
-                    "author": post.get("author", "[deleted]"),
+                    "author": author,
                     "id": post.get("id"),
-                })
+                    "url": post.get("url", ""),
+                    "is_self": post.get("is_self", False),
+                }
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                total_saved += 1
 
-        # Paginar: usar created_utc del último resultado como cursor
-        last_utc = batch[-1].get("created_utc")
-        if last_utc:
-            current_after = last_utc
-        else:
-            break
+            total += len(batch)
 
-        page += 1
-        if page % 10 == 0:
-            log.info(f"  Página {page}: {len(posts)} posts filtrados hasta ahora")
+            # Checkpoint: guardar último timestamp
+            last_utc = batch[-1].get("created_utc")
+            if last_utc:
+                current_after = last_utc
+                save_progress(progress_file, str(last_utc))
+            else:
+                break
 
-    log.info(f"Posts descargados: {len(posts)} (filtrados de r/{SUBREDDIT})")
-    return posts
+            page += 1
+            if page % 50 == 0:
+                log.info(f"  Posts: página {page} | {total_saved:,} guardados de {total:,} vistos")
+
+    log.info(f"Posts completados: {total_saved:,} guardados de {total:,} vistos")
+    return total_saved
 
 
-def fetch_comments(after: str = "2015-01-01", before: str = "2026-04-01") -> list[dict]:
+# ============================================================
+# Descarga de comentarios
+# ============================================================
+
+def fetch_comments(after: str, before: str, resume: bool = False):
     """
-    Descarga comentarios de r/Minecraft filtrados por calidad.
-
-    Misma lógica de paginación que fetch_posts.
-
-    Args:
-        after: Fecha de inicio (YYYY-MM-DD)
-        before: Fecha de fin (YYYY-MM-DD)
-
-    Returns:
-        Lista de comentarios filtrados
+    Descarga comentarios de r/Minecraft incrementalmente.
     """
-    comments = []
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    comments_file = OUTPUT_DIR / "comments.jsonl"
+    progress_file = OUTPUT_DIR / ".progress_comments"
+
     current_after = after
+    mode = "w"
+    if resume:
+        saved = load_progress(progress_file)
+        if saved:
+            current_after = saved
+            mode = "a"
+            log.info(f"Resumiendo comentarios desde {current_after}")
+
     page = 0
+    total = 0
+    total_saved = 0
 
-    log.info(f"Descargando comentarios de r/{SUBREDDIT} ({after} → {before})...")
+    with open(comments_file, mode, encoding="utf-8") as f:
+        while True:
+            time.sleep(RATE_LIMIT)
 
-    while True:
-        time.sleep(RATE_LIMIT)
+            params = {
+                "subreddit": SUBREDDIT,
+                "after": current_after,
+                "before": before,
+                "sort": "asc",
+                "limit": 100,
+            }
 
-        params = {
-            "subreddit": SUBREDDIT,
-            "after": current_after,
-            "before": before,
-            "sort": "asc",
-            "limit": 100,
-        }
+            try:
+                resp = requests.get(f"{API_BASE}/comments/search", params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+            except (requests.RequestException, json.JSONDecodeError) as e:
+                log.warning(f"Error (page {page}): {e}. Reintentando en 5s...")
+                time.sleep(5)
+                continue
 
-        try:
-            resp = requests.get(f"{API_BASE}/comments/search", params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, json.JSONDecodeError) as e:
-            log.warning(f"Error en request (page {page}): {e}. Reintentando en 5s...")
-            time.sleep(5)
-            continue
+            batch = data.get("data", [])
+            if not batch:
+                break
 
-        batch = data.get("data", [])
-        if not batch:
-            break
-
-        for comment in batch:
-            score = comment.get("score", 0)
-            body = comment.get("body", "") or ""
-
-            if score >= MIN_SCORE_COMMENTS and len(body) >= MIN_TEXT_LENGTH:
-                # Filtrar bots y contenido eliminado
+            for comment in batch:
                 author = comment.get("author", "")
-                if author in ("[deleted]", "AutoModerator", "RemindMeBot"):
+                if author in BOTS:
                     continue
 
-                comments.append({
-                    "text": body,
-                    "score": score,
+                entry = {
+                    "text": comment.get("body", "") or "",
+                    "score": comment.get("score", 0),
                     "created_utc": comment.get("created_utc"),
                     "author": author,
                     "id": comment.get("id"),
-                    "link_id": comment.get("link_id"),  # ID del post padre
-                })
+                    "link_id": comment.get("link_id"),
+                    "parent_id": comment.get("parent_id"),
+                }
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                total_saved += 1
 
-        last_utc = batch[-1].get("created_utc")
-        if last_utc:
-            current_after = last_utc
-        else:
-            break
+            total += len(batch)
 
-        page += 1
-        if page % 50 == 0:
-            log.info(f"  Página {page}: {len(comments)} comentarios filtrados hasta ahora")
+            last_utc = batch[-1].get("created_utc")
+            if last_utc:
+                current_after = last_utc
+                save_progress(progress_file, str(last_utc))
+            else:
+                break
 
-    log.info(f"Comentarios descargados: {len(comments)} (filtrados de r/{SUBREDDIT})")
-    return comments
+            page += 1
+            if page % 100 == 0:
+                log.info(f"  Comentarios: página {page} | {total_saved:,} guardados de {total:,} vistos")
+
+    log.info(f"Comentarios completados: {total_saved:,} guardados de {total:,} vistos")
+    return total_saved
 
 
 # ============================================================
@@ -223,46 +247,19 @@ def fetch_comments(after: str = "2015-01-01", before: str = "2026-04-01") -> lis
 # ============================================================
 
 def run(after: str = "2015-01-01", before: str = "2026-04-01", resume: bool = False):
-    """Ejecuta la descarga completa."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    posts_file = OUTPUT_DIR / "posts.jsonl"
-    comments_file = OUTPUT_DIR / "comments.jsonl"
+    log.info(f"Descargando r/{SUBREDDIT} ({after} → {before})")
 
-    # --- Descargar posts ---
-    if resume and posts_file.exists():
-        log.info(f"Posts ya descargados ({posts_file}), saltando...")
-    else:
-        posts = fetch_posts(after=after, before=before)
-        with open(posts_file, "w", encoding="utf-8") as f:
-            for post in posts:
-                f.write(json.dumps(post, ensure_ascii=False) + "\n")
-        log.info(f"Posts guardados en {posts_file}")
+    n_posts = fetch_posts(after, before, resume)
+    n_comments = fetch_comments(after, before, resume)
 
-    # --- Descargar comentarios ---
-    if resume and comments_file.exists():
-        log.info(f"Comentarios ya descargados ({comments_file}), saltando...")
-    else:
-        comments = fetch_comments(after=after, before=before)
-        with open(comments_file, "w", encoding="utf-8") as f:
-            for comment in comments:
-                f.write(json.dumps(comment, ensure_ascii=False) + "\n")
-        log.info(f"Comentarios guardados en {comments_file}")
-
-    # --- Stats ---
-    stats = {}
-    if posts_file.exists():
-        post_count = sum(1 for _ in open(posts_file, encoding="utf-8"))
-        stats["posts"] = post_count
-    if comments_file.exists():
-        comment_count = sum(1 for _ in open(comments_file, encoding="utf-8"))
-        stats["comments"] = comment_count
+    stats = {"posts": n_posts, "comments": n_comments}
 
     log.info("=" * 60)
     log.info("DESCARGA COMPLETADA")
-    log.info(f"  Posts: {stats.get('posts', 0):,}")
-    log.info(f"  Comentarios: {stats.get('comments', 0):,}")
-    log.info(f"  Archivos: {posts_file}, {comments_file}")
+    log.info(f"  Posts: {n_posts:,}")
+    log.info(f"  Comentarios: {n_comments:,}")
     log.info("=" * 60)
 
     stats_file = OUTPUT_DIR / "reddit_stats.json"
@@ -272,9 +269,9 @@ def run(after: str = "2015-01-01", before: str = "2026-04-01", resume: bool = Fa
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Descarga r/Minecraft de Arctic Shift")
-    parser.add_argument("--after", default="2015-01-01", help="Fecha inicio (YYYY-MM-DD)")
-    parser.add_argument("--before", default="2026-04-01", help="Fecha fin (YYYY-MM-DD)")
-    parser.add_argument("--resume", action="store_true", help="Saltear archivos ya descargados")
+    parser.add_argument("--after", default="2015-01-01")
+    parser.add_argument("--before", default="2026-04-01")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     run(after=args.after, before=args.before, resume=args.resume)
