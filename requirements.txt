@@ -1,0 +1,41 @@
+# ============================================================
+# MineGPT - Requirements
+# ============================================================
+# Este archivo lista todas las dependencias del proyecto.
+# Instalar con: pip install -r requirements.txt
+#
+# NOTA: mlx solo funciona en macOS con Apple Silicon (M1/M2/M3).
+# Si estás en Windows/Linux, puedes correr todo excepto el
+# entrenamiento (model/train.py) y la inferencia (model/generate.py).
+# ============================================================
+
+# --- Fase 1: Web Scraping ---
+beautifulsoup4>=4.12.0      # Parser de HTML para extraer texto del wiki
+requests>=2.31.0             # HTTP requests para la API de MediaWiki
+lxml>=5.0.0                  # Parser rápido para BeautifulSoup (backend)
+
+# --- Fase 2: Datasets ---
+datasets>=2.19.0             # HuggingFace datasets (WikiText-103, TinyStories, Alpaca)
+huggingface-hub>=0.23.0      # Descarga de modelos/datasets de HuggingFace
+
+# --- Fase 3: Tokenizer ---
+sentencepiece>=0.2.0         # Entrenamiento de tokenizer BPE custom
+
+# --- Fase 4: Modelo (solo macOS Apple Silicon) ---
+# mlx>=0.12.0                # Framework de ML de Apple - instalar manualmente en Mac
+# mlx-lm>=0.12.0             # Utilidades de LM para MLX
+
+# --- Fase 5: Limpieza de datos ---
+datasketch>=1.6.0            # MinHash para deduplicación de textos similares
+
+# --- Fase 6: Observabilidad del entrenamiento ---
+wandb>=0.17.0                # Weights & Biases - monitoreo de entrenamiento en tiempo real
+tqdm>=4.66.0                 # Barras de progreso en terminal
+
+# --- Fase 7: UI Web ---
+fastapi>=0.111.0             # Backend API para la UI de chat
+uvicorn>=0.30.0              # Servidor ASGI para FastAPI
+jinja2>=3.1.0                # Templates HTML (para servir el frontend si es necesario)
+
+# --- Utilidades ---
+numpy>=1.26.0                # Operaciones numéricas
