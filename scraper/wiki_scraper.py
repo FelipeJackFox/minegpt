@@ -212,9 +212,27 @@ def extract_sounds(soup: BeautifulSoup) -> list[str]:
     return sounds
 
 
+def infobox_to_text(infobox_tag) -> str:
+    """Convierte un infobox HTML a texto estructurado legible."""
+    rows = []
+    for tr in infobox_tag.find_all("tr"):
+        # Usar get_text con separador para no juntar todo
+        cells = [td.get_text(separator=" ", strip=True) for td in tr.find_all(["td", "th"])]
+        cells = [c for c in cells if c]
+        if len(cells) == 2:
+            rows.append(f"{cells[0]}: {cells[1]}")
+        elif len(cells) == 1:
+            rows.append(cells[0])
+        elif len(cells) > 2:
+            rows.append(" | ".join(cells))
+
+    parts = [r for r in rows if r]
+    return "\n".join(parts)
+
+
 def process_html(html: str, title: str) -> tuple[str, list[dict], list[str]]:
     """
-    Procesa HTML del wiki. Obtiene TODO excepto navegación web.
+    Procesa HTML del wiki. Obtiene contenido informativo, limpia artefactos web.
 
     Returns:
         (texto_limpio, tablas_raw, sonidos)
@@ -225,7 +243,7 @@ def process_html(html: str, title: str) -> tuple[str, list[dict], list[str]]:
     tables_raw = extract_tables_raw(soup, title)
     sounds = extract_sounds(soup)
 
-    # --- QUITAR: navegación web (0% contenido informativo) ---
+    # --- QUITAR: navegación y artefactos web ---
     for element in soup.find_all(["script", "style"]):
         element.decompose()
 
@@ -233,14 +251,27 @@ def process_html(html: str, title: str) -> tuple[str, list[dict], list[str]]:
         "navbox",           # Navegación entre artículos
         "mw-editsection",   # Links de [edit]
         "toc",              # Tabla de contenidos
-        "navigation-not-searchable",  # Más navegación
+        "navigation-not-searchable",
+        "mw-cite-backlink",  # Flechas ↑ de referencias
+        "reference",         # Números de referencia [1][2]
+        "reference-text",    # Texto de referencias al pie
     ]:
         for el in soup.find_all(class_=class_name):
             el.decompose()
 
-    # --- Eliminar navbox tables (son tablas de navegación, no datos) ---
+    # Eliminar navbox tables
     for table in soup.find_all("table", class_="navbox"):
         table.decompose()
+
+    # --- Convertir infoboxes a texto legible ---
+    for infobox in soup.find_all(class_="infobox"):
+        text = infobox_to_text(infobox)
+        if text:
+            new_tag = soup.new_tag("p")
+            new_tag.string = text
+            infobox.replace_with(new_tag)
+        else:
+            infobox.decompose()
 
     # --- Convertir wikitables a texto natural ---
     for table in soup.find_all("table", class_="wikitable"):
@@ -256,7 +287,6 @@ def process_html(html: str, title: str) -> tuple[str, list[dict], list[str]]:
     for el in soup.find_all(class_="sprite-file"):
         el.decompose()
     for el in soup.find_all(class_="pixel-image"):
-        # Solo quitar si no tiene texto
         if not el.get_text(strip=True):
             el.decompose()
 
@@ -264,20 +294,64 @@ def process_html(html: str, title: str) -> tuple[str, list[dict], list[str]]:
     for el in soup.find_all(class_="sound"):
         el.decompose()
 
-    # --- Extraer texto ---
-    text = soup.get_text(separator="\n")
+    # --- Unir texto inline (no fragmentar en los links) ---
+    # Reemplazar <br> y block elements con newlines, pero <a>, <b>, <i> son inline
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
 
-    # Normalización barata
+    # Extraer texto: usar " " como separator para que los links no fragmenten
+    # y luego restaurar párrafos donde había block elements
+    text = soup.get_text(separator=" ")
+
+    # --- Limpiar artefactos del footer ---
     lines = []
+    # Secciones de footer que no son contenido informativo
+    footer_markers = {
+        "Navigation", "External links", "References",
+        "This was a featured article",
+    }
+    in_footer = False
+
     for line in text.split("\n"):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+
+        # Detectar inicio de secciones de footer
+        if any(line.startswith(marker) for marker in footer_markers):
+            in_footer = True
+            continue
+
+        # "See also" es una sección legítima — mantener los items pero no URLs
+        if line == "See also":
             lines.append(line)
+            continue
+
+        if in_footer:
+            continue
+
+        # Quitar URLs raw sueltas
+        if re.match(r'^https?://', line):
+            continue
+
+        # Quitar flechas de referencia sueltas
+        if line == "↑":
+            continue
+
+        # Quitar bug tracker IDs sueltos (MC-12345)
+        if re.match(r'^MC-\d+$', line):
+            continue
+
+        lines.append(line)
+
     text = "\n".join(lines)
 
-    # Colapsar whitespace múltiple
+    # Colapsar whitespace
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # Limpiar edition markers fragmentados: "‌\n[\nJE\nonly\n]" → "[JE only]"
+    text = re.sub(r'‌?\s*\[\s*(JE|BE)\s+only\s*\]', r' [\1 only]', text)
 
     return text.strip(), tables_raw, sounds
 
