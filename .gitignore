@@ -34,3 +34,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+scraper/prompt_lab/history/
+raw_data/
+.claude/
