@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MineGPT Prompt Lab</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            bg: { DEFAULT: "#0f172a", surface: "#1e293b", raised: "#273449" },
+            border: "#334155",
+            muted: "#94a3b8",
+            accent: "#3b82f6",
+            success: "#34d399",
+            error: "#f87171",
+            warn: "#f59e0b",
+          },
+          fontFamily: {
+            mono: ["Fira Code", "Consolas", "Monaco", "monospace"],
+          },
+        },
+      },
+    };
+  </script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <style>
+    body {
+      background: #0f172a;
+      color: #f1f5f9;
+    }
+    .scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+    .scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    .scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    .row-fail {
+      background: rgba(248, 113, 113, 0.10);
+      border-left: 3px solid #f87171;
+    }
+    .row-pass {
+      border-left: 3px solid #34d399;
+    }
+    .row-pending {
+      opacity: 0.4;
+    }
+    .row-running {
+      background: rgba(59, 130, 246, 0.10);
+      border-left: 3px solid #3b82f6;
+    }
+
+    .badge-keep { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+    .badge-discard { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+    .badge-unknown { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; }
+    .badge-unparseable { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+
+    textarea, input[type="text"], input[type="number"] {
+      background: #0f172a;
+      color: #f1f5f9;
+      border: 1px solid #334155;
+    }
+    textarea:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid #3b82f6;
+      outline-offset: 2px;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3);
+    }
+
+    .accuracy-high { color: #34d399; }
+    .accuracy-mid { color: #f59e0b; }
+    .accuracy-low { color: #f87171; }
+    .accuracy-none { color: #94a3b8; }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .dot-pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
+  </style>
+</head>
+<body class="font-sans text-sm h-screen flex flex-col" x-data="promptLab()" x-init="init()">
+  <!-- ============================================================ Header ============================================================ -->
+  <div class="border-b border-border/60 bg-bg-surface/60 backdrop-blur">
+    <div class="flex items-center gap-4 px-5 py-3">
+      <h1 class="text-lg font-semibold">MineGPT</h1>
+
+      <!-- View tabs -->
+      <div class="flex items-center gap-1 ml-2">
+        <button @click="currentView = 'lab'"
+          :class="currentView === 'lab' ? 'text-white border-accent shadow-[0_2px_8px_rgba(59,130,246,0.3)]' : 'text-muted border-transparent'"
+          class="px-3 py-1.5 text-sm border-b-2 transition-all duration-150 rounded-t-md">
+          Prompt Lab
+        </button>
+        <button @click="currentView = 'production'"
+          :class="currentView === 'production' ? 'text-white border-accent shadow-[0_2px_8px_rgba(59,130,246,0.3)]' : 'text-muted border-transparent'"
+          class="px-3 py-1.5 text-sm border-b-2 transition-all duration-150 rounded-t-md">
+          Production
+        </button>
+      </div>
+
+      <!-- Task selector -->
+      <select
+        x-model="activeTask"
+        @change="loadTask()"
+        aria-label="Task selector"
+        class="bg-bg-surface border border-border/60 rounded-md px-3 py-1.5 text-sm transition-all duration-150"
+        x-show="currentView === 'lab'"
+      >
+        <template x-for="t in tasks" :key="t.name">
+          <option :value="t.name" x-text="t.name + ' (' + t.testset_size + ')'"></option>
+        </template>
+      </select>
+
+      <!-- Connection -->
+      <div class="flex items-center gap-2 text-xs">
+        <span
+          class="w-2 h-2 rounded-full"
+          :class="connection.ok ? 'bg-success' : 'bg-error'"
+          :aria-label="connection.ok ? 'Connected' : 'Disconnected'"
+        ></span>
+        <span class="text-muted" x-text="connection.msg || 'Checking...'"></span>
+        <button @click="checkConnection()" class="text-muted hover:text-white p-2 -m-1 rounded-md transition-all duration-150" aria-label="Refresh connection">&#8635;</button>
+      </div>
+
+      <div class="flex-1"></div>
+
+      <!-- Model selector -->
+      <div class="flex items-center gap-2 text-xs" x-show="currentView === 'lab'">
+        <select x-model="params.model" aria-label="Model selector" class="bg-bg-surface border border-border/60 rounded-md px-2 py-1 font-mono transition-all duration-150" :disabled="running">
+          <template x-for="m in availableModels" :key="m">
+            <option :value="m" x-text="m"></option>
+          </template>
+        </select>
+      </div>
+
+      <!-- Run stats (lab only) -->
+      <div class="flex items-center gap-4 text-sm" x-show="currentView === 'lab'">
+        <div class="flex items-center gap-2">
+          <span class="text-muted text-xs">Elapsed</span>
+          <span class="font-mono text-base" x-text="formatTime(elapsedTime)"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-muted text-xs">Progress</span>
+          <span class="font-mono text-base">
+            <span x-text="stats.processed"></span>
+            <span class="text-muted">/</span>
+            <span x-text="stats.total"></span>
+          </span>
+        </div>
+        <div class="flex items-center gap-2" x-show="mode === 'classify'">
+          <span class="text-muted text-xs">Accuracy</span>
+          <span
+            class="font-mono text-xl font-bold"
+            :class="accuracyClass()"
+          >
+            <span x-text="accuracyPct()"></span>
+          </span>
+        </div>
+        <div class="flex items-center gap-2" x-show="stats.processed > 0 && elapsedTime > 0">
+          <span class="text-muted text-xs">Speed</span>
+          <span class="font-mono text-sm" x-text="(stats.processed / (elapsedTime / 60)).toFixed(1) + '/min'"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="h-1.5 bg-bg-surface" x-show="currentView === 'lab'">
+      <div
+        class="h-1.5 bg-accent transition-all duration-200 rounded-r"
+        :style="`width: ${(stats.processed / Math.max(stats.total,1)) * 100}%`"
+      ></div>
+    </div>
+
+    <!-- Mac Mini stats bar (only on Prompt Lab tab — Production has its own widget) -->
+    <div x-show="currentView === 'lab'" class="flex items-center gap-4 px-5 py-1 text-xs font-mono text-muted border-b border-border/60 bg-bg/80">
+      <span>Mac Mini</span>
+      <span>RAM <span :class="macStats.used_pct > 85 ? 'text-error' : macStats.used_pct > 70 ? 'text-warn' : 'text-success'" x-text="macStats.used_pct ? macStats.used_pct + '%' : '—'"></span></span>
+      <span>Used <span x-text="macStats.used_mb ? (macStats.used_mb/1024).toFixed(1)+'GB' : '—'"></span></span>
+      <span>Avail <span class="text-success" x-text="macStats.available_mb ? (macStats.available_mb/1024).toFixed(1)+'GB' : '—'"></span></span>
+      <span>Swap <span :class="macStats.swap_used_mb > 100 ? 'text-error' : 'text-success'" x-text="macStats.swap_used_mb !== undefined ? macStats.swap_used_mb.toFixed(0)+'MB' : '—'"></span></span>
+      <span class="text-muted/50" x-text="macStats.cpu_line || ''"></span>
+      <!-- Mini RAM bar -->
+      <div class="w-24 h-1.5 bg-bg-surface rounded-md overflow-hidden">
+        <div class="h-full rounded-md transition-all duration-150" :class="macStats.used_pct > 85 ? 'bg-error' : macStats.used_pct > 70 ? 'bg-warn' : 'bg-success'" :style="`width: ${macStats.used_pct || 0}%`"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ Prompt Lab View ============================================================ -->
+  <div x-show="currentView === 'lab'" class="flex flex-1 overflow-hidden">
+
+    <!-- ===== Left panel: Prompt editor ===== -->
+    <div class="flex flex-col border-r border-border/60" style="width: 45%;">
+      <div class="flex items-center justify-between px-4 py-2 border-b border-border/60">
+        <h2 class="text-xs uppercase tracking-widest text-muted/80 font-medium">Prompt</h2>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-muted" x-show="promptDirty">&#9679; unsaved</span>
+          <button
+            @click="savePrompt()"
+            class="text-xs px-2 py-1 bg-bg-surface hover:bg-bg-raised/80 border border-border/60 rounded-md transition-all duration-150 shadow-sm shadow-black/20"
+            title="Guarda el prompt actual como version final"
+          >
+            Save as final
+          </button>
+        </div>
+      </div>
+
+      <textarea
+        x-model="prompt"
+        @input="promptDirty = true"
+        @keydown.ctrl.enter="running ? cancelRun() : startRun()"
+        class="flex-1 p-5 font-mono text-xs leading-relaxed resize-none scrollbar rounded-md"
+        placeholder="Use {title} and {text} as placeholders"
+      ></textarea>
+
+      <!-- Params + Run -->
+      <div class="border-t border-border/60 p-3 bg-bg-surface/40">
+        <div class="flex items-center gap-3 mb-3">
+          <label class="text-xs text-muted whitespace-nowrap">num_ctx</label>
+          <input type="number" x-model.number="params.num_ctx" class="w-24 px-2 py-1 rounded-md text-xs font-mono transition-all duration-150" />
+          <label class="text-xs text-muted whitespace-nowrap ml-2">temp</label>
+          <input type="number" step="0.05" x-model.number="params.temperature" class="w-20 px-2 py-1 rounded-md text-xs font-mono transition-all duration-150" />
+          <div class="flex-1"></div>
+          <label class="flex items-center gap-1.5 text-xs text-muted cursor-pointer">
+            <input type="checkbox" x-model="filters.failuresOnly" class="accent-accent" />
+            Show failures only
+          </label>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            @click="running ? cancelRun() : startRun()"
+            :disabled="!connection.ok && !running"
+            class="flex-1 px-4 py-2.5 rounded-md font-semibold transition-all duration-150 shadow-sm shadow-black/20"
+            :class="running
+              ? 'bg-error/80 hover:bg-error text-white'
+              : connection.ok
+                ? 'bg-accent hover:bg-accent/80 text-white'
+                : 'bg-bg-surface text-muted cursor-not-allowed'"
+          >
+            <span x-show="!running">&#9654; Run</span>
+            <span x-show="running">&#9632; Cancel</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Right panel: Results ===== -->
+    <div class="flex flex-col flex-1 overflow-hidden">
+      <!-- Tabs -->
+      <div class="flex items-center border-b border-border/60">
+        <button
+          @click="viewMode = 'table'"
+          :class="viewMode === 'table' ? 'text-white border-accent shadow-[0_2px_8px_rgba(59,130,246,0.3)]' : 'text-muted border-transparent'"
+          class="px-4 py-2 text-xs uppercase tracking-widest font-medium border-b-2 hover:text-white transition-all duration-150"
+        >
+          Results table
+        </button>
+        <button
+          @click="viewMode = 'detail'"
+          :class="viewMode === 'detail' ? 'text-white border-accent shadow-[0_2px_8px_rgba(59,130,246,0.3)]' : 'text-muted border-transparent'"
+          class="px-4 py-2 text-xs uppercase tracking-widest font-medium border-b-2 hover:text-white transition-all duration-150"
+        >
+          Detail view <span x-show="selectedItem" class="ml-1 text-muted">(<span x-text="selectedItem?.title?.slice(0,30)"></span>)</span>
+        </button>
+        <div class="flex-1"></div>
+        <div class="px-4 py-2 text-xs text-muted">
+          <template x-if="mode === 'classify'">
+            <span>
+              <span class="badge-keep px-1.5 py-0.5 rounded-md mx-1">KEEP <span x-text="stats.dist.KEEP || 0"></span></span>
+              <span class="badge-discard px-1.5 py-0.5 rounded-md mx-1">DISCARD <span x-text="stats.dist.DISCARD || 0"></span></span>
+              <span class="badge-unknown px-1.5 py-0.5 rounded-md mx-1" x-show="stats.dist.UNKNOWN">UNKNOWN <span x-text="stats.dist.UNKNOWN || 0"></span></span>
+            </span>
+          </template>
+        </div>
+      </div>
+
+      <!-- Table view -->
+      <div x-show="viewMode === 'table'" class="flex-1 overflow-auto scrollbar">
+        <table class="w-full text-sm">
+          <thead class="sticky top-0 bg-bg border-b border-border/60">
+            <tr class="text-xs uppercase tracking-widest font-medium text-muted/80">
+              <th scope="col" class="text-left px-3 py-2 w-10">#</th>
+              <th scope="col" class="text-left px-3 py-2 w-8"></th>
+              <th scope="col" class="text-left px-3 py-2">Title</th>
+              <th scope="col" class="text-left px-3 py-2 w-24" x-show="mode === 'classify'">Expected</th>
+              <th scope="col" class="text-left px-3 py-2 w-24" x-show="mode === 'classify'">Actual</th>
+              <th scope="col" class="text-left px-3 py-2" x-show="mode === 'classify'">Reason</th>
+              <th scope="col" class="text-left px-3 py-2 w-16">Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Empty state -->
+            <tr x-show="items.length === 0 || items.every(i => i.status === 'pending')">
+              <td :colspan="mode === 'classify' ? 7 : 4" class="px-3 py-8 text-center text-muted">
+                Hit Run to start testing
+              </td>
+            </tr>
+            <template x-for="(item, idx) in visibleItems()" :key="idx">
+              <tr
+                class="border-b border-border/60 hover:bg-white/[0.03] cursor-pointer transition-all duration-150"
+                :class="rowClass(item)"
+                @click="selectItem(item)"
+                x-show="item.status !== 'pending' || !items.every(i => i.status === 'pending')"
+              >
+                <td class="px-3 py-2.5 text-muted font-mono text-xs" x-text="item.idx != null ? item.idx + 1 : ''"></td>
+                <td class="px-3 py-2.5 font-mono">
+                  <template x-if="item.status === 'done' && item.match === true">
+                    <span class="text-success">&#10003;</span>
+                  </template>
+                  <template x-if="item.status === 'done' && item.match === false">
+                    <span class="text-error">&#10007;</span>
+                  </template>
+                  <template x-if="item.status === 'done' && item.match === null">
+                    <span class="text-muted">&#8226;</span>
+                  </template>
+                  <template x-if="item.status === 'running'">
+                    <span class="text-accent">&#10227;</span>
+                  </template>
+                  <template x-if="item.status === 'pending'">
+                    <span class="text-muted/50">&#9675;</span>
+                  </template>
+                </td>
+                <td class="px-3 py-2.5 text-sm truncate max-w-md" x-text="item.title"></td>
+                <td class="px-3 py-2.5" x-show="mode === 'classify'">
+                  <span
+                    class="text-xs px-2 py-0.5 rounded-md font-mono"
+                    :class="badgeClass(item.expected)"
+                    x-text="item.expected"
+                  ></span>
+                </td>
+                <td class="px-3 py-2.5" x-show="mode === 'classify'">
+                  <span
+                    class="text-xs px-2 py-0.5 rounded-md font-mono"
+                    :class="badgeClass(item.actual)"
+                    x-text="item.actual || '—'"
+                  ></span>
+                </td>
+                <td class="px-3 py-2.5 text-xs text-muted truncate max-w-xs" x-show="mode === 'classify'" x-text="item.reason || '—'" :title="item.reason"></td>
+                <td class="px-3 py-2.5 text-xs text-muted font-mono" x-text="item.duration ? item.duration.toFixed(1) + 's' : '—'"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Detail view -->
+      <div x-show="viewMode === 'detail'" class="flex-1 overflow-hidden flex flex-col">
+        <template x-if="!selectedItem">
+          <div class="flex-1 flex items-center justify-center text-muted text-sm">
+            Click a row in the table to see detail
+          </div>
+        </template>
+        <template x-if="selectedItem">
+          <div class="flex-1 overflow-auto scrollbar p-5 space-y-4">
+            <!-- Header -->
+            <div class="flex items-start justify-between">
+              <div>
+                <h3 class="text-base font-semibold" x-text="selectedItem.title"></h3>
+                <div class="flex items-center gap-3 mt-1 text-xs text-muted">
+                  <span>#<span x-text="(selectedItem.idx ?? 0) + 1"></span></span>
+                  <span x-show="selectedItem.duration" x-text="selectedItem.duration?.toFixed(1) + 's'"></span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2" x-show="mode === 'classify'">
+                <span class="text-xs text-muted">Expected</span>
+                <span class="text-xs px-2 py-0.5 rounded-md font-mono" :class="badgeClass(selectedItem.expected)" x-text="selectedItem.expected"></span>
+                <span class="text-muted">&rarr;</span>
+                <span class="text-xs text-muted">Actual</span>
+                <span class="text-xs px-2 py-0.5 rounded-md font-mono" :class="badgeClass(selectedItem.actual)" x-text="selectedItem.actual || '—'"></span>
+              </div>
+            </div>
+
+            <!-- Reason -->
+            <template x-if="selectedItem.reason">
+              <div>
+                <h4 class="text-xs uppercase tracking-widest text-muted/80 font-medium mb-1">Qwen's reasoning</h4>
+                <div class="bg-bg-raised border border-border/60 rounded-lg p-3 text-sm leading-relaxed shadow-sm shadow-black/20" x-text="selectedItem.reason"></div>
+              </div>
+            </template>
+
+            <!-- Input -->
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <h4 class="text-xs uppercase tracking-widest text-muted/80 font-medium">Input sent to Qwen (hatnotes stripped, max 800 words)</h4>
+                <span class="text-xs text-muted" x-show="selectedItem.input_preview">
+                  <span x-text="selectedItem.input_preview?.split(' ').length"></span> words,
+                  <span x-text="selectedItem.input_preview?.length"></span> chars
+                </span>
+              </div>
+              <pre class="bg-bg-surface border border-border/60 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-[500px] overflow-auto scrollbar shadow-sm shadow-black/20" x-text="selectedItem.input_preview || '(not available yet)'"></pre>
+            </div>
+
+            <!-- Qwen raw response -->
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <h4 class="text-xs uppercase tracking-widest text-muted/80 font-medium">Qwen raw response</h4>
+              </div>
+              <pre class="bg-bg-surface border border-border/60 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-96 overflow-auto scrollbar shadow-sm shadow-black/20" x-text="selectedItem.raw_response || '(pending)'"></pre>
+            </div>
+
+            <!-- Error -->
+            <template x-if="selectedItem.error">
+              <div>
+                <h4 class="text-xs uppercase tracking-widest text-error font-medium mb-1">Error</h4>
+                <pre class="bg-error/10 border border-error/30 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-sm shadow-black/20" x-text="selectedItem.error"></pre>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ Production View ============================================================ -->
+  <div x-show="currentView === 'production'" class="flex-1 overflow-auto scrollbar p-5 space-y-4">
+
+    <!-- ROW 1: Control strip -->
+    <div class="grid grid-cols-12 gap-4">
+
+      <!-- Job Control -->
+      <div class="col-span-4 bg-bg-surface border border-border/60 rounded-lg p-4 shadow-sm shadow-black/20">
+        <h3 class="text-xs uppercase tracking-widest text-muted/80 font-medium mb-3">Job Control</h3>
+        <div class="space-y-3">
+          <div class="flex items-center gap-2">
+            <label class="text-xs text-muted w-14">Model</label>
+            <select x-model="prod.model" aria-label="Production model" class="flex-1 bg-bg border border-border/60 rounded-md px-2 py-1.5 text-sm font-mono transition-all duration-150" :disabled="prod.status === 'running'">
+              <template x-for="m in availableModels" :key="m">
+                <option :value="m" x-text="m"></option>
+              </template>
+            </select>
+          </div>
+          <div class="flex items-center gap-2">
+            <label class="text-xs text-muted w-14">Prompt</label>
+            <span class="text-xs text-muted/80 truncate flex-1" x-text="prompt ? prompt.slice(0, 60) + '...' : '(none loaded)'"  :title="prompt"></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button @click="startProd()" :disabled="prod.status === 'running'" class="px-3 py-1.5 text-xs rounded-md font-semibold transition-all duration-150 shadow-sm shadow-black/20" :class="prod.status === 'running' ? 'bg-bg-raised text-muted cursor-not-allowed' : 'bg-success/20 text-success hover:bg-success/30'">&#9654; Start</button>
+            <button @click="prod.status === 'paused' ? resumeProd() : pauseProd()" :disabled="prod.status !== 'running' && prod.status !== 'paused'" class="px-3 py-1.5 text-xs rounded-md font-semibold transition-all duration-150 shadow-sm shadow-black/20" :class="prod.status === 'running' || prod.status === 'paused' ? 'bg-warn/20 text-warn hover:bg-warn/30' : 'bg-bg-raised text-muted cursor-not-allowed'" x-text="prod.status === 'paused' ? '&#9654; Resume' : '&#9208; Pause'"></button>
+            <button @click="cancelProd()" :disabled="prod.status !== 'running' && prod.status !== 'paused'" class="px-3 py-1.5 text-xs rounded-md font-semibold transition-all duration-150 shadow-sm shadow-black/20" :class="prod.status === 'running' || prod.status === 'paused' ? 'bg-error/20 text-error hover:bg-error/30' : 'bg-bg-raised text-muted cursor-not-allowed'">&#9632; Stop</button>
+          </div>
+          <div class="flex items-center gap-2 text-xs">
+            <span class="text-muted">Status:</span>
+            <span class="w-2 h-2 rounded-full" :class="{
+              'bg-success dot-pulse': prod.status === 'running',
+              'bg-warn': prod.status === 'paused',
+              'bg-muted/50': prod.status === 'idle',
+              'bg-error': prod.status === 'error',
+              'bg-success': prod.status === 'done'
+            }"></span>
+            <span class="font-mono uppercase" :class="{
+              'text-success': prod.status === 'running' || prod.status === 'done',
+              'text-warn': prod.status === 'paused',
+              'text-muted': prod.status === 'idle',
+              'text-error': prod.status === 'error'
+            }" x-text="prod.status"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div class="col-span-4 bg-bg-surface border border-border/60 rounded-lg p-4 shadow-sm shadow-black/20">
+        <h3 class="text-xs uppercase tracking-widest text-muted/80 font-medium mb-3">Progress</h3>
+        <div class="space-y-3">
+          <!-- Progress bar -->
+          <div class="relative h-5 bg-bg rounded-md overflow-hidden border border-border/60">
+            <div class="h-full bg-accent/80 transition-all duration-300 rounded-md" :style="`width: ${prod.total > 0 ? (prod.processed / prod.total * 100) : 0}%`"></div>
+            <span class="absolute inset-0 flex items-center justify-center text-xs font-mono font-semibold" x-text="prod.total > 0 ? prod.processed + '/' + prod.total + ' (' + (prod.processed / prod.total * 100).toFixed(1) + '%)' : '0/0'"></span>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-muted">Elapsed: <span class="font-mono text-white" x-text="formatTimeLong(prod.elapsed)"></span></span>
+          </div>
+          <div class="flex items-center justify-between text-xs" x-show="prod.eta > 0">
+            <span class="text-muted">ETA: <span class="font-mono text-white" x-text="'~' + formatTimeLong(prod.eta) + ' remaining'"></span></span>
+            <span class="text-muted">Finishes at <span class="font-mono text-white" x-text="etaFinishTime()"></span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Performance -->
+      <div class="col-span-4 bg-bg-surface border border-border/60 rounded-lg p-4 shadow-sm shadow-black/20">
+        <h3 class="text-xs uppercase tracking-widest text-muted/80 font-medium mb-3">Performance</h3>
+        <div class="space-y-2 text-xs">
+          <div class="flex items-center justify-between">
+            <span class="text-muted">Items/min</span>
+            <span class="font-mono" x-text="prod.itemsPerMin.toFixed(1)"></span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-muted">Avg sec/item</span>
+            <span class="font-mono" x-text="prod.avgSeconds.toFixed(1)"></span>
+          </div>
+          <div class="border-t border-border/60 pt-2 mt-2">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-muted">Mac Mini M2 16GB</span>
+              <span class="text-xs" :class="macStats.used_pct > 85 ? 'text-error' : macStats.used_pct > 70 ? 'text-warn' : 'text-success'" x-text="macStats.used_pct ? macStats.used_pct + '% RAM' : ''"></span>
+            </div>
+            <!-- RAM bar -->
+            <div class="w-full h-2 bg-bg rounded-full overflow-hidden mb-2">
+              <div class="h-full rounded-full transition-all duration-500" :class="macStats.used_pct > 85 ? 'bg-error' : macStats.used_pct > 70 ? 'bg-warn' : 'bg-success'" :style="`width: ${macStats.used_pct || 0}%`"></div>
+            </div>
+            <div class="grid grid-cols-3 gap-1 text-[11px]">
+              <div>
+                <span class="text-muted">Used</span>
+                <span class="font-mono block" x-text="macStats.used_mb ? (macStats.used_mb/1024).toFixed(1)+'GB' : '—'"></span>
+              </div>
+              <div>
+                <span class="text-muted">Avail</span>
+                <span class="font-mono block text-success" x-text="macStats.available_mb ? (macStats.available_mb/1024).toFixed(1)+'GB' : '—'"></span>
+              </div>
+              <div>
+                <span class="text-muted">Swap</span>
+                <span class="font-mono block" :class="macStats.swap_used_mb > 100 ? 'text-error' : ''" x-text="macStats.swap_used_mb !== undefined ? macStats.swap_used_mb.toFixed(0)+'MB' : '—'"></span>
+              </div>
+            </div>
+            <div class="flex items-center justify-between mt-2 text-[11px]">
+              <span class="text-muted">Thermal</span>
+              <span class="font-mono" :class="macStats.thermal === 'Nominal' ? 'text-success' : macStats.thermal === 'Fair' ? 'text-warn' : 'text-error'" x-text="macStats.thermal || '—'"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 2: Live feed + Stats -->
+    <div class="grid grid-cols-12 gap-4" style="height: calc(100vh - 340px);">
+
+      <!-- Live Feed -->
+      <div class="col-span-7 bg-bg-surface border border-border/60 rounded-lg shadow-sm shadow-black/20 flex flex-col overflow-hidden">
+        <h3 class="text-xs uppercase tracking-widest text-muted/80 font-medium px-4 py-3 border-b border-border/60">Live Feed</h3>
+        <div class="flex-1 overflow-auto scrollbar" x-ref="prodFeed">
+          <table class="w-full text-xs">
+            <thead class="sticky top-0 bg-bg-surface">
+              <tr class="text-muted/80 uppercase tracking-widest font-medium">
+                <th scope="col" class="text-left px-3 py-2 w-12">#</th>
+                <th scope="col" class="text-left px-3 py-2">Title</th>
+                <th scope="col" class="text-left px-3 py-2 w-20">Result</th>
+                <th scope="col" class="text-left px-3 py-2 w-14">Time</th>
+                <th scope="col" class="text-left px-3 py-2">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-if="prod.feed.length === 0">
+                <tr>
+                  <td colspan="5" class="px-3 py-8 text-center text-muted">No items processed yet</td>
+                </tr>
+              </template>
+              <template x-for="(fi, fidx) in prod.feed" :key="fi.index">
+                <tr class="border-b border-border/60 hover:bg-white/[0.03] transition-all duration-150 cursor-pointer" @click="prod.selectedFeedItem = fi">
+                  <td class="px-3 py-2 text-muted font-mono" x-text="fi.index"></td>
+                  <td class="px-3 py-2 truncate max-w-[260px]" :title="fi.title" x-text="fi.title.length > 40 ? fi.title.slice(0, 40) + '...' : fi.title"></td>
+                  <td class="px-3 py-2">
+                    <span class="px-1.5 py-0.5 rounded-md text-xs font-mono" :class="fi.classification === 'KEEP' ? 'badge-keep' : fi.classification === 'DISCARD' ? 'badge-discard' : 'badge-unknown'" x-text="fi.classification"></span>
+                  </td>
+                  <td class="px-3 py-2 text-muted font-mono" x-text="fi.duration.toFixed(0) + 's'"></td>
+                  <td class="px-3 py-2 text-muted truncate max-w-[200px]" :title="fi.reason" x-text="fi.reason ? (fi.reason.length > 40 ? fi.reason.slice(0, 40) + '...' : fi.reason) : '—'"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Detail panel (click on feed item) -->
+        <template x-if="prod.selectedFeedItem">
+          <div class="border-t border-border/60 bg-bg-raised/50 p-4 space-y-3 max-h-72 overflow-auto scrollbar">
+            <div class="flex items-center justify-between">
+              <h4 class="text-sm font-semibold" x-text="'#' + prod.selectedFeedItem.index + ' ' + prod.selectedFeedItem.title"></h4>
+              <div class="flex items-center gap-2">
+                <span class="px-1.5 py-0.5 rounded-md text-xs font-mono" :class="prod.selectedFeedItem.classification === 'KEEP' ? 'badge-keep' : 'badge-discard'" x-text="prod.selectedFeedItem.classification"></span>
+                <span class="text-xs text-muted" x-text="prod.selectedFeedItem.duration?.toFixed(1) + 's'"></span>
+                <button @click="prod.selectedFeedItem = null" class="text-muted hover:text-white p-1 rounded-md transition-all">✕</button>
+              </div>
+            </div>
+            <template x-if="prod.selectedFeedItem.reason">
+              <div>
+                <span class="text-xs uppercase tracking-widest text-muted/80 font-medium">Reason</span>
+                <p class="text-xs mt-1" x-text="prod.selectedFeedItem.reason"></p>
+              </div>
+            </template>
+            <div>
+              <span class="text-xs uppercase tracking-widest text-muted/80 font-medium">Input sent to Qwen</span>
+              <pre class="bg-bg border border-border/60 rounded-md p-3 text-xs font-mono whitespace-pre-wrap max-h-40 overflow-auto scrollbar mt-1 leading-relaxed" x-text="prod.selectedFeedItem.input_preview || '(not available)'"></pre>
+            </div>
+            <div>
+              <span class="text-xs uppercase tracking-widest text-muted/80 font-medium">Raw response</span>
+              <pre class="bg-bg border border-border/60 rounded-md p-3 text-xs font-mono whitespace-pre-wrap max-h-24 overflow-auto scrollbar mt-1 leading-relaxed" x-text="prod.selectedFeedItem.raw_response || '(not available)'"></pre>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Stats -->
+      <div class="col-span-5 bg-bg-surface border border-border/60 rounded-lg shadow-sm shadow-black/20 flex flex-col overflow-hidden">
+        <h3 class="text-xs uppercase tracking-widest text-muted/80 font-medium px-4 py-3 border-b border-border/60">Stats</h3>
+        <div class="p-4 space-y-4 flex-1 overflow-auto scrollbar">
+          <!-- Distribution -->
+          <div>
+            <h4 class="text-xs text-muted mb-2">Distribution</h4>
+            <div class="space-y-2">
+              <div class="flex items-center gap-3">
+                <span class="text-xs text-success w-16">KEEP</span>
+                <div class="flex-1 h-4 bg-bg rounded-md overflow-hidden">
+                  <div class="h-full bg-success/30 transition-all duration-300 rounded-md" :style="`width: ${prod.processed > 0 ? (prod.distribution.KEEP / prod.processed * 100) : 0}%`"></div>
+                </div>
+                <span class="text-xs font-mono w-10 text-right" x-text="prod.distribution.KEEP"></span>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs text-error w-16">DISCARD</span>
+                <div class="flex-1 h-4 bg-bg rounded-md overflow-hidden">
+                  <div class="h-full bg-error/30 transition-all duration-300 rounded-md" :style="`width: ${prod.processed > 0 ? (prod.distribution.DISCARD / prod.processed * 100) : 0}%`"></div>
+                </div>
+                <span class="text-xs font-mono w-10 text-right" x-text="prod.distribution.DISCARD"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Errors -->
+          <div class="border-t border-border/60 pt-4">
+            <h4 class="text-xs text-muted mb-2">Errors</h4>
+            <div class="flex items-center gap-4 text-xs">
+              <span>Timeouts: <span class="font-mono" :class="prod.errors.timeout > 0 ? 'text-error' : 'text-muted'" x-text="prod.errors.timeout"></span></span>
+              <span>Unparseable: <span class="font-mono" :class="prod.errors.unparseable > 0 ? 'text-warn' : 'text-muted'" x-text="prod.errors.unparseable"></span></span>
+              <span>Connection: <span class="font-mono" :class="prod.errors.connection > 0 ? 'text-error' : 'text-muted'" x-text="prod.errors.connection"></span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ Toast ============================================================ -->
+  <div
+    x-show="toast.visible"
+    x-transition
+    class="fixed bottom-4 right-4 px-4 py-2 rounded-lg border text-sm shadow-sm shadow-black/20"
+    :class="toast.type === 'error' ? 'bg-error/20 border-error text-red-200' : 'bg-success/20 border-success text-green-200'"
+    x-text="toast.msg"
+  ></div>
+
+  <!-- ============================================================ Alpine state ============================================================ -->
+  <script>
+    function promptLab() {
+      return {
+        currentView: 'lab',
+        tasks: [],
+        activeTask: "spinoff_classifier",
+        mode: "classify",
+        prompt: "",
+        promptDirty: false,
+        params: { num_ctx: 4096, temperature: 0.1, model: "qwen3:14b" },
+        availableModels: ["qwen3:14b", "qwen3:8b", "qwen3:4b"],
+        items: [],
+        running: false,
+        runId: null,
+        eventSource: null,
+        startTime: null,
+        elapsedTime: 0,
+        timerHandle: null,
+        stats: { processed: 0, total: 0, correct: 0, evaluated: 0, dist: {} },
+        connection: { ok: false, msg: "Checking..." },
+        viewMode: "table",
+        selectedItem: null,
+        filters: { failuresOnly: false },
+        toast: { visible: false, msg: "", type: "success" },
+        macStats: {},
+        macStatsInterval: null,
+        prod: {
+          status: 'idle',
+          model: 'qwen3:8b',
+          processed: 0,
+          total: 0,
+          elapsed: 0,
+          eta: 0,
+          itemsPerMin: 0,
+          avgSeconds: 0,
+          distribution: { KEEP: 0, DISCARD: 0 },
+          errors: { timeout: 0, unparseable: 0, connection: 0 },
+          feed: [],
+          selectedFeedItem: null,
+          eventSource: null,
+        },
+        prodPollHandle: null,
+
+        async init() {
+          await this.loadTasks();
+          await this.loadModels();
+          await this.checkConnection();
+          await this.refreshMacStats();
+          this.macStatsInterval = setInterval(() => this.refreshMacStats(), 10000);
+
+          // Check for active run in localStorage (for resume after refresh/close)
+          const savedRunId = localStorage.getItem("mgpt_activeRunId");
+          if (savedRunId) {
+            const resumed = await this.tryResume(savedRunId);
+            if (resumed) return;
+            localStorage.removeItem("mgpt_activeRunId");
+          }
+
+          await this.loadTask();
+
+          // Check if production job is running
+          await this.pollProdStatus();
+        },
+
+        async tryResume(savedRunId) {
+          try {
+            const r = await fetch(`/api/run/${savedRunId}/state`);
+            if (!r.ok) return false;
+            const state = await r.json();
+
+            this.activeTask = state.task;
+            await this.loadTask();
+            this.runId = savedRunId;
+            this.prompt = state.prompt;
+            this.promptDirty = false;
+            this.params.num_ctx = state.num_ctx;
+            this.params.temperature = state.temperature;
+
+            state.items.forEach((serverItem) => {
+              const localItem = this.items[serverItem.idx];
+              if (!localItem) return;
+              localItem.actual = serverItem.actual;
+              localItem.reason = serverItem.reason || "";
+              localItem.raw_response = serverItem.raw_response;
+              localItem.input_preview = serverItem.input_preview;
+              localItem.match = serverItem.match;
+              localItem.duration = serverItem.duration;
+              localItem.error = serverItem.error;
+              localItem.status = "done";
+            });
+
+            this.stats.processed = state.items.length;
+            this.stats.correct = state.items.filter((it) => it.match === true).length;
+            this.stats.evaluated = state.items.filter((it) => it.match !== null).length;
+            this.stats.dist = {};
+            state.items.forEach((it) => {
+              if (it.actual) {
+                this.stats.dist[it.actual] = (this.stats.dist[it.actual] || 0) + 1;
+              }
+            });
+
+            if (state.done) {
+              this.elapsedTime = (state.end_time - state.start_time);
+              this.running = false;
+              const evald = state.items.filter((it) => it.match !== null).length;
+              this.showToast(
+                `Restored completed run: ${this.stats.correct}/${evald}`,
+                "success"
+              );
+            } else {
+              this.running = true;
+              this.startTime = state.start_time * 1000;
+              this.elapsedTime = (Date.now() - this.startTime) / 1000;
+              this.timerHandle = setInterval(() => {
+                this.elapsedTime = (Date.now() - this.startTime) / 1000;
+              }, 100);
+              const nextPending = this.items.find((it) => it.status === "pending");
+              if (nextPending) nextPending.status = "running";
+              this.connectEvents();
+              this.showToast("Resumed active run", "success");
+            }
+            return true;
+          } catch (e) {
+            console.error("Resume failed:", e);
+            return false;
+          }
+        },
+
+        async loadTasks() {
+          const r = await fetch("/api/tasks");
+          this.tasks = await r.json();
+        },
+
+        async loadTask() {
+          const r = await fetch(`/api/task/${this.activeTask}`);
+          const data = await r.json();
+          this.mode = data.mode;
+          this.prompt = data.prompt;
+          this.promptDirty = false;
+          this.items = data.testset.map((it, idx) => ({
+            idx,
+            title: it.title,
+            expected: it.expected || "",
+            actual: null,
+            reason: null,
+            match: null,
+            duration: null,
+            raw_response: null,
+            input_preview: null,
+            error: null,
+            status: "pending",
+          }));
+          this.stats = {
+            processed: 0,
+            total: data.testset.length,
+            correct: 0,
+            evaluated: 0,
+            dist: {},
+          };
+          this.elapsedTime = 0;
+        },
+
+        async refreshMacStats() {
+          try {
+            const r = await fetch("/api/mac/stats");
+            this.macStats = await r.json();
+          } catch (e) { /* ignore */ }
+        },
+
+        async loadModels() {
+          try {
+            const r = await fetch("/api/ollama/models");
+            const data = await r.json();
+            if (data.models && data.models.length > 0) {
+              this.availableModels = data.models;
+            }
+          } catch (e) { /* ignore */ }
+        },
+
+        async checkConnection() {
+          try {
+            const r = await fetch("/api/connection");
+            this.connection = await r.json();
+          } catch (e) {
+            this.connection = { ok: false, msg: "Error: " + e };
+          }
+        },
+
+        async savePrompt() {
+          const evald = this.stats.evaluated || 0;
+          const acc = evald > 0 ? this.stats.correct / evald : null;
+          const r = await fetch(`/api/task/${this.activeTask}/prompt`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: this.prompt, accuracy: acc }),
+          });
+          const data = await r.json();
+          this.promptDirty = false;
+          this.showToast("Saved: " + data.saved_to, "success");
+        },
+
+        async startRun() {
+          if (!this.connection.ok) return;
+
+          localStorage.removeItem("mgpt_activeRunId");
+          this.items.forEach((it) => {
+            it.status = "pending";
+            it.actual = null;
+            it.reason = null;
+            it.match = null;
+            it.duration = null;
+            it.raw_response = null;
+            it.input_preview = null;
+            it.error = null;
+          });
+          this.stats.processed = 0;
+          this.stats.correct = 0;
+          this.stats.evaluated = 0;
+          this.stats.dist = {};
+          this.elapsedTime = 0;
+          this.running = true;
+          this.startTime = Date.now();
+
+          this.timerHandle = setInterval(() => {
+            this.elapsedTime = (Date.now() - this.startTime) / 1000;
+          }, 100);
+
+          if (this.items.length > 0) this.items[0].status = "running";
+
+          try {
+            const r = await fetch("/api/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                task: this.activeTask,
+                prompt: this.prompt,
+                model: this.params.model,
+                num_ctx: this.params.num_ctx,
+                temperature: this.params.temperature,
+              }),
+            });
+            const data = await r.json();
+            this.runId = data.run_id;
+            localStorage.setItem("mgpt_activeRunId", this.runId);
+            this.connectEvents();
+          } catch (e) {
+            this.running = false;
+            this.showToast("Error starting run: " + e, "error");
+            clearInterval(this.timerHandle);
+          }
+        },
+
+        async cancelRun() {
+          if (!this.runId) return;
+          await fetch(`/api/run/${this.runId}/cancel`, { method: "POST" });
+        },
+
+        connectEvents() {
+          const es = new EventSource(`/api/run/${this.runId}/events`);
+          this.eventSource = es;
+
+          es.addEventListener("item", (e) => {
+            const payload = JSON.parse(e.data);
+            const item = this.items[payload.idx];
+            if (!item) return;
+
+            if (item.status === "done") return;
+
+            item.actual = payload.actual;
+            item.reason = payload.reason || "";
+            item.raw_response = payload.raw_response;
+            item.input_preview = payload.input_preview;
+            item.match = payload.match;
+            item.duration = payload.duration;
+            item.error = payload.error;
+            item.status = "done";
+
+            this.stats.processed++;
+            if (payload.match === true) this.stats.correct++;
+            if (payload.match !== null) this.stats.evaluated++;
+
+            if (payload.actual) {
+              this.stats.dist[payload.actual] =
+                (this.stats.dist[payload.actual] || 0) + 1;
+            }
+          });
+
+          es.addEventListener("running", (e) => {
+            const data = JSON.parse(e.data);
+            this.items.forEach((it) => {
+              if (it.status === "running") it.status = "pending";
+            });
+            const item = this.items[data.idx];
+            if (item && item.status !== "done") {
+              item.status = "running";
+            }
+          });
+
+          es.addEventListener("done", (e) => {
+            const payload = JSON.parse(e.data);
+            this.elapsedTime = payload.duration;
+            this.running = false;
+            clearInterval(this.timerHandle);
+            es.close();
+            localStorage.removeItem("mgpt_activeRunId");
+            this.showToast(
+              `Done in ${payload.duration.toFixed(1)}s — ${this.stats.correct}/${this.stats.evaluated} correct`,
+              "success"
+            );
+          });
+
+          es.addEventListener("error", (e) => {
+            console.error("SSE error", e);
+            this.running = false;
+            clearInterval(this.timerHandle);
+          });
+        },
+
+        // ---- Production methods ----
+        async startProd() {
+          try {
+            const r = await fetch("/api/prod/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: this.prod.model,
+                prompt: this.prompt,
+                input_file: "articles_cleaned.jsonl",
+                output_file: "spinoffs_classified.jsonl",
+                num_ctx: this.params.num_ctx,
+                temperature: this.params.temperature,
+              }),
+            });
+            if (!r.ok) { this.showToast("Failed to start production", "error"); return; }
+            this.prod.status = 'running';
+            this.connectProdSSE();
+            if (!this.prodPollHandle) {
+              this.prodPollHandle = setInterval(() => this.pollProdStatus(), 10000);
+            }
+          } catch (e) {
+            this.showToast("Error: " + e, "error");
+          }
+        },
+
+        async pauseProd() {
+          try {
+            await fetch("/api/prod/pause", { method: "POST" });
+            this.prod.status = 'paused';
+          } catch (e) { this.showToast("Error: " + e, "error"); }
+        },
+
+        async resumeProd() {
+          try {
+            await fetch("/api/prod/resume", { method: "POST" });
+            this.prod.status = 'running';
+          } catch (e) { this.showToast("Error: " + e, "error"); }
+        },
+
+        async cancelProd() {
+          try {
+            await fetch("/api/prod/cancel", { method: "POST" });
+            this.prod.status = 'idle';
+            if (this.prod.eventSource) { this.prod.eventSource.close(); this.prod.eventSource = null; }
+            if (this.prodPollHandle) { clearInterval(this.prodPollHandle); this.prodPollHandle = null; }
+          } catch (e) { this.showToast("Error: " + e, "error"); }
+        },
+
+        connectProdSSE() {
+          if (this.prod.eventSource) this.prod.eventSource.close();
+          const es = new EventSource("/api/prod/events");
+          this.prod.eventSource = es;
+
+          es.addEventListener("item", (e) => {
+            const data = JSON.parse(e.data);
+            this.prod.feed.unshift({
+              index: data.idx ?? data.index,
+              title: data.title || '(unknown)',
+              classification: data.classification || data.actual || '?',
+              duration: data.duration || 0,
+              reason: data.reason || '',
+              input_preview: data.input_preview || '',
+              raw_response: data.raw_response || '',
+            });
+            if (this.prod.feed.length > 50) this.prod.feed.pop();
+            // Update distribution
+            const cls = (data.classification || data.actual || '').toUpperCase();
+            if (cls === 'KEEP') this.prod.distribution.KEEP++;
+            else if (cls === 'DISCARD') this.prod.distribution.DISCARD++;
+            this.prod.processed = data.processed || (this.prod.processed + 1);
+            // Auto-scroll feed to top
+            this.$nextTick(() => {
+              if (this.$refs.prodFeed) this.$refs.prodFeed.scrollTop = 0;
+            });
+          });
+
+          es.addEventListener("progress", (e) => {
+            const data = JSON.parse(e.data);
+            this.prod.processed = data.processed || this.prod.processed;
+            this.prod.total = data.total || this.prod.total;
+            this.prod.elapsed = data.elapsed || this.prod.elapsed;
+            this.prod.eta = data.eta || this.prod.eta;
+            this.prod.itemsPerMin = data.items_per_min || this.prod.itemsPerMin;
+            this.prod.avgSeconds = data.avg_seconds || this.prod.avgSeconds;
+            if (data.distribution) this.prod.distribution = data.distribution;
+            if (data.errors) this.prod.errors = data.errors;
+            if (data.status) this.prod.status = data.status;
+          });
+
+          es.addEventListener("done", () => {
+            this.prod.status = 'done';
+            es.close();
+            this.prod.eventSource = null;
+            if (this.prodPollHandle) { clearInterval(this.prodPollHandle); this.prodPollHandle = null; }
+            this.showToast("Production run completed", "success");
+          });
+
+          es.addEventListener("error", () => {
+            // SSE reconnect is automatic, but track errors
+            console.error("Prod SSE error");
+          });
+        },
+
+        async pollProdStatus() {
+          try {
+            const r = await fetch("/api/prod/status");
+            if (!r.ok) return;
+            const data = await r.json();
+            this.prod.status = data.status || this.prod.status;
+            this.prod.processed = data.processed ?? this.prod.processed;
+            this.prod.total = data.total ?? this.prod.total;
+            this.prod.elapsed = data.elapsed ?? this.prod.elapsed;
+            this.prod.eta = data.eta ?? this.prod.eta;
+            this.prod.itemsPerMin = data.items_per_min ?? this.prod.itemsPerMin;
+            this.prod.avgSeconds = data.avg_seconds ?? this.prod.avgSeconds;
+            if (data.distribution) this.prod.distribution = data.distribution;
+            if (data.errors) this.prod.errors = data.errors;
+            if (data.feed) this.prod.feed = data.feed;
+
+            // If running and no SSE connected, connect
+            if ((data.status === 'running' || data.status === 'paused') && !this.prod.eventSource) {
+              this.connectProdSSE();
+              if (!this.prodPollHandle) {
+                this.prodPollHandle = setInterval(() => this.pollProdStatus(), 10000);
+              }
+            }
+          } catch (e) { /* ignore */ }
+        },
+
+        // ---- Shared helpers ----
+        visibleItems() {
+          if (!this.filters.failuresOnly) return this.items;
+          return this.items.filter(
+            (it) => it.status === "done" && it.match === false
+          );
+        },
+
+        selectItem(item) {
+          this.selectedItem = item;
+          this.viewMode = "detail";
+        },
+
+        rowClass(item) {
+          if (item.status === "pending") return "row-pending";
+          if (item.status === "running") return "row-running";
+          if (this.mode === "classify") {
+            if (item.match === true) return "row-pass";
+            if (item.match === false) return "row-fail";
+          }
+          return "";
+        },
+
+        badgeClass(value) {
+          const v = (value || "").toUpperCase();
+          if (v === "KEEP") return "badge-keep";
+          if (v === "DISCARD") return "badge-discard";
+          if (v === "UNKNOWN") return "badge-unknown";
+          if (v === "UNPARSEABLE") return "badge-unparseable";
+          return "badge-unknown";
+        },
+
+        accuracyPct() {
+          if (this.stats.evaluated === 0) return "—";
+          const p = (this.stats.correct / this.stats.evaluated) * 100;
+          return p.toFixed(0) + "% (" + this.stats.correct + "/" + this.stats.evaluated + ")";
+        },
+
+        accuracyClass() {
+          if (this.stats.evaluated === 0) return "accuracy-none";
+          const p = (this.stats.correct / this.stats.evaluated) * 100;
+          if (p >= 90) return "accuracy-high";
+          if (p >= 70) return "accuracy-mid";
+          return "accuracy-low";
+        },
+
+        formatTime(s) {
+          if (!s) return "0:00";
+          const m = Math.floor(s / 60);
+          const sec = Math.floor(s % 60);
+          return `${m}:${sec.toString().padStart(2, "0")}`;
+        },
+
+        formatTimeLong(s) {
+          if (!s) return "0s";
+          const h = Math.floor(s / 3600);
+          const m = Math.floor((s % 3600) / 60);
+          if (h > 0) return `${h}h ${m}m`;
+          return `${m}m`;
+        },
+
+        etaFinishTime() {
+          if (!this.prod.eta) return '';
+          const finish = new Date(Date.now() + this.prod.eta * 1000);
+          return finish.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        },
+
+        showToast(msg, type = "success") {
+          this.toast = { visible: true, msg, type };
+          setTimeout(() => (this.toast.visible = false), 3000);
+        },
+      };
+    }
+  </script>
+</body>
+</html>
