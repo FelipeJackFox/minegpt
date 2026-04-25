@@ -875,30 +875,51 @@ async def _execute_prod_job(items: list[dict], skip: int, output_path: Path):
 
         item_start = time.time()
         error = None
-        try:
-            result = await asyncio.to_thread(
-                generate,
-                prompt_rendered,
-                model=PROD_JOB["model"],
-                num_ctx=PROD_JOB["num_ctx"],
-                temperature=PROD_JOB["temperature"],
-            )
-            raw = result.response
-            duration = result.total_duration_s
-        except _requests.exceptions.Timeout:
-            raw = ""
-            duration = time.time() - item_start
-            error = "timeout"
-            PROD_JOB["errors"]["timeout"] += 1
-        except _requests.exceptions.ConnectionError:
-            raw = ""
-            duration = time.time() - item_start
-            error = "connection"
+        raw = ""
+        duration = 0
+        MAX_RETRIES = 3
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                result = await asyncio.to_thread(
+                    generate,
+                    prompt_rendered,
+                    model=PROD_JOB["model"],
+                    num_ctx=PROD_JOB["num_ctx"],
+                    temperature=PROD_JOB["temperature"],
+                )
+                raw = result.response
+                duration = result.total_duration_s
+                error = None
+                break  # exito
+            except _requests.exceptions.ConnectionError:
+                error = "connection"
+                # Intentar reabrir tunnel y reintentar
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "Prod item %d: connection error (attempt %d/%d), reopening tunnel...",
+                    i, attempt + 1, MAX_RETRIES,
+                )
+                ensure_tunnel()
+                await asyncio.sleep(5)  # esperar a que tunnel se estabilice
+            except _requests.exceptions.Timeout:
+                error = "timeout"
+                _log_mod = __import__("logging")
+                _log_mod.getLogger(__name__).warning(
+                    "Prod item %d: timeout (attempt %d/%d)", i, attempt + 1, MAX_RETRIES,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(3)
+            except Exception as e:
+                error = str(e)
+                break  # error desconocido, no reintentar
+
+        duration = duration or (time.time() - item_start)
+
+        if error == "connection":
             PROD_JOB["errors"]["connection"] += 1
-        except Exception as e:
-            raw = ""
-            duration = time.time() - item_start
-            error = str(e)
+        elif error == "timeout":
+            PROD_JOB["errors"]["timeout"] += 1
 
         classification, reason = parse_classification(raw, classes)
 
@@ -929,15 +950,22 @@ async def _execute_prod_job(items: list[dict], skip: int, output_path: Path):
             "raw_response": raw,
         }
 
-        # Escribir al JSONL incrementalmente
-        with open(output_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-        # Escribir DISCARDs por separado para audit posterior
-        if classification == "DISCARD":
-            discard_path = output_path.parent / (output_path.stem + "_discarded.jsonl")
-            with open(discard_path, "a", encoding="utf-8") as f:
+        # Solo escribir al JSONL si la clasificacion es valida (no UNPARSEABLE)
+        if classification in ("KEEP", "DISCARD"):
+            with open(output_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+            if classification == "DISCARD":
+                discard_path = output_path.parent / (output_path.stem + "_discarded.jsonl")
+                with open(discard_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        else:
+            # UNPARSEABLE: loggear pero NO escribir al output (se reintentara en resume)
+            import logging as _log_mod
+            _log_mod.getLogger(__name__).warning(
+                "Prod item %d UNPARSEABLE (no escrito al output, se reintentara): %s",
+                i, item.get("title", ""),
+            )
 
         # Actualizar estado en memoria
         PROD_JOB["processed"] = i + 1

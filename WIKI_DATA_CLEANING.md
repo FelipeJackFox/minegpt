@@ -73,17 +73,47 @@
 - OLLAMA_NUM_PARALLEL: no da speedup real en producción (Metal es single-stream)
 - OLLAMA_FLASH_ATTENTION=1: habilitado para mejora marginal
 
-### Fase 3: Clasificación de spin-offs — EN PROGRESO 2026-04-24
-- [x] Implementar production runner en `scraper/prompt_lab/server.py`
-- [x] Filtrar solo spin-offs de articles_cleaned.jsonl (1,723 items)
-- [ ] Ejecutar clasificación completa (estimado ~13h con 8b, ~26h con 14b)
-- [ ] Auditar DISCARDs (`spinoffs_classified_discarded.jsonl`)
-- [ ] Revisar distribución KEEP/DISCARD — ajustar prompt si sesgo evidente
-- [ ] Generar `spinoffs_keep.jsonl` final con solo los artículos narrativos
+### Fase 3: Clasificación de spin-offs — POSPUESTA (decisión 2026-04-25)
 
-**Estado actual**: corrida en progreso con qwen3:14b, ~39/1723 procesados, 0 errores
+**Decisión: posponer spin-offs para iteración v2 del LLM.**
+
+Después de 2 días de iteración intensiva (5+ versiones de prompt, 3 modelos testeados, 2 corridas de producción completas, 4 audits con agentes), concluimos que incluir spin-offs en v1 del LLM no es viable:
+
+1. **Problema de clasificación irresoluble con modelos locales:**
+   - qwen3:14b (9.3GB): demasiado estricto, 94% accuracy. Descarta overviews de juego y narrativa con stats. Razón: ve stats → dice DISCARD, ignora contexto narrativo.
+   - qwen3:8b (5.2GB): demasiado permisivo, 463/1723 KEEP (27%). Keepea enchantments específicos, mobs genéricos, versions. 
+   - Ninguno logró el punto medio (~150-200 KEEPs, ~10%).
+   - El prompt se refinó 5+ veces pero el trade-off strict/permissive es inherente al tamaño del modelo.
+
+2. **Riesgo de confusión vanilla/spin-off:**
+   - Un LLM de 125M params no tiene capacidad para distinguir "espada en Dungeons" de "espada en vanilla" si ambas están en el training data.
+   - Incluso con clasificación perfecta, la transformación posterior sería otro proyecto entero.
+
+3. **Costo de oportunidad:**
+   - 2 días de iteración consumidos sin resultado productivo.
+   - El dataset vanilla (9,267 artículos + 1,270 changelogs = ~11.3M palabras) es suficiente para v1.
+
+**Plan para v2 (Mac Mini M4 24GB, junio-julio 2026):**
+- Modelo más grande (350-750M params) que maneje la distinción vanilla/spin-off
+- Qwen más grande (30B+) para transformación con mejor calidad
+- Dataset de spin-offs ya scrapeado y limpiado (fases 1+2) — listo para usar
+- Archivo de referencia: `spinoffs_classified_8b_final.jsonl` (1,723 items, 463 KEEP / 1,260 DISCARD)
+
+**Corridas de producción realizadas:**
+- Run 1 (14b): 389/1723 items, 68 KEEP / 321 DISCARD. Audit encontró 14 overviews + 7 narrativos wrongly discarded, 7 skins wrongly kept.
+- Run 2 (8b, prompt condensado): 1723/1723 completo. 463 KEEP / 1260 DISCARD. Audit encontró ~50+ false positives (enchantments, mobs genéricos, versions), 5 overviews + 3 narrativos aún wrongly discarded.
+
+**Infraestructura construida (reutilizable para fases 4-5):**
+- Prompt Lab UI con Production dashboard corre en Mac Mini via tmux
+- SSH tunnel automático, resume capability, retry en connection errors
+- Mac Mini stats monitoring (RAM, CPU, Swap, Thermal)
+- DISCARDs se loggean separado para audit
+
+- [ ] Prompt para changelogs — probar con 10 changelogs variados
+- [ ] Prompt para commands — probar con 10 commands variados
 - [ ] Prompt para clasificar shorts — probar con 10 shorts variados
-- [ ] Prompt para transformar artículos core — probar con 10 artículos variados (mob, bloque, item, bioma, mecánica)
+- [ ] Prompt para transformar artículos core — probar con 10 artículos variados
+- [ ] Prompt para generar Q&A
 - [ ] Guardar todos los prompts finales en `scraper/prompts/`
 
 ### Fase 4b: Transformar changelogs (Qwen)
@@ -127,6 +157,7 @@
 ### Post-pipeline
 - [ ] Consolidar todo en dataset final
 - [ ] Contar estadísticas finales (artículos, palabras, Q&A pairs)
+- [ ] **Evaluar arquitectura del modelo**: con el dataset final definido, calcular tokens totales y decidir tamaño óptimo. Config actual (23M params, 6 layers, 512 dim) es demasiado pequeña. La Mac Mini M2 16GB aguanta hasta ~350M params para training. Recomendación tentativa: 125-200M params (12 layers, 768 dim, 3072 ff, 12 heads, 1024 ctx, 16K vocab). Ratio ideal: ~20 tokens/param (Chinchilla). Con ~170M tokens estimados → ~8.5M óptimo por Chinchilla, pero con curriculum learning + oversampling, 125M es stretch razonable. Documentar decisión en `utils/config.py`.
 - [ ] Actualizar `data/mixer.py` con nuevos archivos
 - [ ] Entrenar tokenizer con dataset limpio
 
