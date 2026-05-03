@@ -338,8 +338,13 @@ PRIMARY_PRIORITY_GAME_VANILLA = [
     "Redstone_mechanics", "Redstone_circuits",
     "Redstone",  # generic redstone (last resort for redstone)
 
-    # ----- Removed / experimental -----
-    "Removed_features", "Removed_blocks", "Removed_items",
+    # ----- Removed / experimental (specific subtypes only here) -----
+    # NOTE: `Removed_features` (catch-all) was moved to the END of this list
+    # 2026-05-03 — it's too generic and was outranking Commands and other
+    # specific buckets. Articles with both `Commands` and `Removed_features`
+    # cats should land in Commands; articles with ONLY `Removed_features` as
+    # their most-specific cat get dropped by Phase 0 of hardening_v2.
+    "Removed_blocks", "Removed_items",
     "Experimental",
 
     # ----- Sound -----
@@ -382,6 +387,14 @@ PRIMARY_PRIORITY_GAME_VANILLA = [
 
     # ----- Modding -----
     "Mods", "Mod_loaders", "Mod_managers", "Game_customization",
+
+    # ----- Catch-all "this thing was removed" (lowest priority) -----
+    # Articles whose ONLY meaningful cat is `Removed_features` will land
+    # here as primary, and Phase 0 of hardening_v2 drops them
+    # (`removed_features_only`). Articles that ALSO have a more specific
+    # cat (Commands, Manufactured_blocks, Animal_mobs, ...) win that
+    # bucket as primary; Removed_features goes into also_in.
+    "Removed_features",
 ]
 
 # Title-based mechanic fallbacks (when no useful cat matches)

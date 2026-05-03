@@ -743,9 +743,10 @@ def phase_0_category_filter(art: dict) -> tuple[str, str | None]:
     # about, but useful as Q&A source ("when was X added?").
     text_for_clf = art.get("text", "")
     try:
-        ambiente, _ = primary_classify(title, list(cats), text_for_clf)
+        ambiente, primary_bucket = primary_classify(title, list(cats), text_for_clf)
     except Exception:
         ambiente = None
+        primary_bucket = None
     if ambiente == "versions":
         return ("route_qa_direct", "version_changelog_page")
 
@@ -758,6 +759,16 @@ def phase_0_category_filter(art: dict) -> tuple[str, str | None]:
         title.startswith("Item format/") or title.startswith("Block format/")
     ):
         return ("drop", "removed_format_nbt_only")
+
+    # `Removed_features` as PRIMARY bucket = the most specific cat the
+    # classifier could find for this article was the catch-all "removed".
+    # The bucket is too thematically varied (different epochs / different
+    # types of features) to be a coherent training signal, and articles
+    # are typically not verbose enough for useful Q&A. Drop.
+    # (Articles with Removed_features in also_in but a more-specific primary
+    # bucket are NOT affected — they enter via the primary bucket as usual.)
+    if primary_bucket == "Removed_features":
+        return ("drop", "removed_features_only")
 
     # MinecraftEdu blocks (discontinued edition).
     if "MinecraftEdu_blocks" in cats and wc < 400:
