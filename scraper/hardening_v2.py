@@ -700,21 +700,16 @@ def phase_0_category_filter(art: dict) -> tuple[str, str | None]:
     title = art.get("title", "")
     wc = art.get("word_count") or 0
 
-    # Disambig pages: route to qa_direct (useful for Q&A pairs with Qwen).
+    # Disambig + Set_index pages: route ALL to qa_direct. By design these
+    # are indexing pages ("X may refer to: A, B, C") with little prose value
+    # for the training corpus, but they're useful Q&A sources ("what types
+    # of X exist?", "what's the difference between A and B?"). Even when
+    # they carry secondary cats, the article body is always a list — the
+    # primary semantic intent is indexing, not domain content.
     if "Disambiguation_pages" in cats:
         return ("route_qa_direct", "disambig")
-
-    # Set_index pages: keep for qa_direct only if prose-bearing, else drop.
     if "Set_index_pages" in cats:
-        text = art.get("text", "")
-        lines = [ln for ln in text.split("\n") if ln.strip()]
-        if lines:
-            prose_ratio = sum(1 for ln in lines if len(ln.split()) > 6) / len(lines)
-        else:
-            prose_ratio = 0.0
-        if wc > 200 and prose_ratio > 0.4:
-            return ("route_qa_direct", "set_index_with_prose")
-        return ("drop", "set_index_pure_list")
+        return ("route_qa_direct", "set_index")
 
     # Title-prefixed wiki meta.
     if title.startswith(("File:", "Template:", "Help:", "Minecraft Wiki:")):
