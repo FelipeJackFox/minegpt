@@ -613,6 +613,21 @@ RE_CONSOLE_VERSION_PREFIX = re.compile(
     re.MULTILINE,
 )
 
+# ---- Phase 0 (deprecation banner detection) ----
+# Compiled once at module load. Run against first ~1500 chars of cleaned text.
+# Negative lookahead on `officially made unobtainable\.` rejects the
+# edition-qualified form `unobtainable in Bedrock Edition.` (still current
+# in another edition).
+DEPRECATION_BANNER_RE = re.compile(
+    r"This page describes content that has been removed "
+    r"(?:from the game|and was only present in earlier versions)"
+    r"|This article (?:is about|describes) the unused\b"
+    r"|This article documents a feature that has been officially scrapped"
+    r"|This page describes an edition of the game that has been officially discontinued"
+    r"|This feature is available only in MinecraftEdu, an edition of the game that has been officially discontinued"
+    r"|officially made unobtainable\.(?!\s*in\s)"
+)
+
 # ---- Phase 11 ----
 RE_MULTI_SPACE = re.compile(r" {2,}")
 RE_EMPTY_HEADER = re.compile(r"^(#+\s+[^\n]+)\n+(?=#+\s+)", re.MULTILINE)
@@ -744,6 +759,28 @@ def phase_0_category_filter(art: dict) -> tuple[str, str | None]:
         primary_bucket = None
     if ambiente == "versions":
         return ("route_qa_direct", "version_changelog_page")
+
+    # ---- Deprecation filter (banners + cats) ----
+    # Articles whose ENTIRE body describes content that has been removed,
+    # scrapped, or was never released risk confusing the LLM ("how does X
+    # work?" -> describes deprecated mechanic in present tense without
+    # marking it as historical). Catch via:
+    #   (a) banner phrases the wiki uses for fully-deprecated content
+    #   (b) cats that strongly correlate with full deprecation
+    # `Tutorial:` articles are exempted — many reference removed bugs as
+    # historical context but the tutorial itself is current.
+    if not title.startswith("Tutorial:"):
+        # Cat-based: Unused_features and Unused_biomes are 54/54 safe-to-drop
+        # per audit (full content describes never-released or replaced features).
+        if cats & {"Unused_features", "Unused_biomes"}:
+            return ("drop", "unused_content")
+        # Banner-based: scan first ~1500 chars of cleaned text for any
+        # full-deprecation banner. Negative lookahead on `officially made
+        # unobtainable\.` excludes the edition-qualified form (those articles
+        # describe content still available in another edition).
+        text_head = art.get("text", "")[:1500]
+        if DEPRECATION_BANNER_RE.search(text_head):
+            return ("drop", "deprecated_content")
 
     # Java Edition history-of-textures subpages — pure changelog.
     if title.startswith("Java Edition history of ") and wc < 500:
