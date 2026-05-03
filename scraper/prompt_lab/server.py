@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -42,6 +43,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from scraper.prompt_lab.ollama_client import check_connection, generate
+from scraper.prompt_lab import article_viewer
+from scraper.prompt_lab import state_manager
+from scraper.prompt_lab import batch_runner
+from scraper.prompt_lab.output_normalizer import normalize as normalize_output
+from scraper.prompt_lab.state import (
+    BucketState, ExclusionEntry, ExclusionScope, ExclusionAction,
+    RunPhase, RunMode, RunHistoryEntry,
+)
 
 # ============================================================
 # SSH tunnel management
@@ -354,9 +363,14 @@ def parse_classification(response: str, classes: list[str]) -> tuple[str, str]:
 # ----- API Endpoints -----
 
 
-@app.get("/api/mac/stats")
-def api_mac_stats():
-    """Stats de la Mac Mini via SSH (RAM, CPU, swap)."""
+# Mac Mini stats: cache TTL 8s para evitar SSH-storm con multiples clientes.
+_MAC_STATS_CACHE: dict = {"ts": 0.0, "data": None}
+_MAC_STATS_TTL = 8.0
+_mac_stats_lock = threading.Lock()
+
+
+def _fetch_mac_stats() -> dict:
+    """SSH real a Mac Mini. No cachear aqui — cachea el caller."""
     import subprocess
     try:
         result = subprocess.run(
@@ -382,7 +396,6 @@ def api_mac_stats():
             elif "Pages wired" in line:
                 stats["wired_mb"] = int(line.split(":")[1].strip().rstrip(".")) * page_size // (1024 * 1024)
             elif "swapusage" in line:
-                # "vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M"
                 parts = line.split()
                 for j, p in enumerate(parts):
                     if p == "used":
@@ -390,7 +403,6 @@ def api_mac_stats():
             elif "CPU usage" in line:
                 stats["cpu_line"] = line.strip()
             elif "pressure level" in line:
-                # "Current pressure level: Nominal"
                 level = line.split(":")[-1].strip()
                 stats["thermal"] = level
 
@@ -402,22 +414,66 @@ def api_mac_stats():
         stats["total_mb"] = total
         stats["used_pct"] = round(used / total * 100, 1)
         stats["swap_used_mb"] = stats.get("swap_used_mb", 0)
+        stats["cached"] = False
+        stats["fetched_at"] = time.time()
 
         return stats
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "fetched_at": time.time()}
+
+
+@app.get("/api/mac/stats")
+def api_mac_stats():
+    """
+    Stats de la Mac Mini via SSH (RAM, CPU, swap, thermal).
+    Cache server-side TTL 8s — multiples clientes/ventanas no multiplican
+    SSH calls (de N x 6/min a 6/min global).
+    """
+    now_t = time.time()
+    with _mac_stats_lock:
+        cached = _MAC_STATS_CACHE.get("data")
+        cached_ts = _MAC_STATS_CACHE.get("ts", 0.0)
+        if cached is not None and (now_t - cached_ts) < _MAC_STATS_TTL:
+            # Cache hit: marcar y devolver
+            out = dict(cached)
+            out["cached"] = True
+            out["age_s"] = round(now_t - cached_ts, 1)
+            return out
+
+    # Cache miss: fetch fresco fuera del lock (evita serializar SSH)
+    fresh = _fetch_mac_stats()
+    with _mac_stats_lock:
+        _MAC_STATS_CACHE["data"] = fresh
+        _MAC_STATS_CACHE["ts"] = now_t
+    return fresh
 
 
 @app.on_event("startup")
 def on_startup():
-    """Auto-open SSH tunnel on server start."""
+    """Auto-open SSH tunnel on server start + kick off article indexing + init state + start worker."""
     ok, msg = ensure_tunnel()
+    log = __import__("logging").getLogger(__name__)
     if ok:
-        log = __import__("logging").getLogger(__name__)
         log.info(f"SSH tunnel: {msg}")
     else:
-        log = __import__("logging").getLogger(__name__)
         log.warning(f"SSH tunnel failed: {msg}")
+
+    article_viewer.start_indexing_async()
+    log.info("Article viewer indexing started in background")
+
+    state_manager.ensure_state_files()
+    log.info(f"Pipeline state files ready at {state_manager.STATE_DIR}")
+
+    # Phase 4.0 — recovery + start batch runner worker
+    orphan = batch_runner.recover_interrupted()
+    if orphan:
+        log.warning(
+            f"Recovered interrupted run {orphan['run_id']} "
+            f"({orphan['bucket_lens']} {orphan['phase']} {orphan['mode']}); "
+            f"marked as interrupted in history. Re-enqueue to resume from where it stopped."
+        )
+    batch_runner.start_worker()
+    log.info("Batch run worker started")
 
 
 @app.get("/api/connection")
@@ -1208,6 +1264,654 @@ def api_prod_history():
         except Exception:
             continue
     return runs
+
+
+# ============================================================
+# Article viewer endpoints
+# ============================================================
+
+
+@app.get("/api/articles/index_status")
+def api_articles_index_status():
+    return article_viewer.get_status()
+
+
+@app.get("/api/articles/groups")
+def api_articles_groups():
+    if not article_viewer.INDEX_STATUS["ready"]:
+        return {"ready": False, "groups": [], "versions": []}
+    return {
+        "ready": True,
+        "groups": article_viewer.get_groups(),
+        "versions": article_viewer.get_versions_meta(),
+        "meta_cat_regex": article_viewer.get_meta_cat_regex(),
+    }
+
+
+@app.get("/api/articles/list")
+def api_articles_list(
+    group: str,
+    tier: str | None = None,
+    q: str | None = None,
+    sort: str = "alpha",
+    offset: int = 0,
+    limit: int = 200,
+):
+    return article_viewer.list_articles(group, tier, q, sort, offset, limit)
+
+
+@app.get("/api/articles/get")
+def api_articles_get(title: str, version: str = "cleaned"):
+    a = article_viewer.get_article(title, version)
+    if a is None:
+        raise HTTPException(404, f"Article '{title}' not found in version '{version}'")
+    return a
+
+
+@app.get("/api/articles/get_multi")
+def api_articles_get_multi(title: str, versions: str):
+    vs = [v.strip() for v in versions.split(",") if v.strip()]
+    return article_viewer.get_multi(title, vs)
+
+
+@app.get("/api/articles/search")
+def api_articles_search(q: str, limit: int = 20):
+    return {"results": article_viewer.search_global(q, limit)}
+
+
+@app.get("/api/articles/peek")
+def api_articles_peek(title: str):
+    text = article_viewer.peek(title)
+    return {"title": title, "preview": text or ""}
+
+
+class FlagRequest(BaseModel):
+    title: str
+    current_group: str | None = None
+    suggested_group: str | None = None
+    note: str | None = None
+
+
+@app.post("/api/articles/flag")
+def api_articles_flag(body: FlagRequest):
+    saved = article_viewer.log_flag(body.dict())
+    return {"ok": True, "saved": saved}
+
+
+@app.get("/api/articles/flags")
+def api_articles_flags():
+    return {"flags": article_viewer.list_flags()}
+
+
+# ============================================================
+# Phase 4.0 — Bucket state, exclusions, drafts, run queue
+# ============================================================
+
+# ----- Bucket state -----
+
+
+class BucketStateUpdate(BaseModel):
+    """Update parcial. Cualquier subset de fields de BucketState."""
+
+    ambiente: str | None = None
+    family: str | None = None
+    primary_count: int | None = None
+    secondary_count: int | None = None
+    transform_status: str | None = None
+    transform_run_id: str | None = None
+    transform_run_completed: bool | None = None
+    transform_user_approved: bool | None = None
+    transform_excluded_count: int | None = None
+    qa_status: str | None = None
+    qa_run_id: str | None = None
+    qa_run_completed: bool | None = None
+    qa_user_approved: bool | None = None
+    qa_excluded_count: int | None = None
+    skipped_reason: str | None = None
+    force_transform: bool | None = None
+
+
+@app.get("/api/buckets/state")
+def api_buckets_state_all():
+    """Estado de todos los buckets."""
+    states = state_manager.load_bucket_status()
+    return {name: s.model_dump() for name, s in states.items()}
+
+
+@app.get("/api/buckets/state/{bucket}")
+def api_buckets_state_one(bucket: str):
+    s = state_manager.get_bucket_state(bucket)
+    if s is None:
+        return {"bucket": bucket, "exists": False}
+    return {"bucket": bucket, "exists": True, **s.model_dump()}
+
+
+@app.post("/api/buckets/state/{bucket}")
+def api_buckets_state_update(bucket: str, body: BucketStateUpdate):
+    """Update parcial. Si bucket no existe, requiere ambiente+family."""
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        s = state_manager.update_bucket_state(bucket, **fields)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return s.model_dump()
+
+
+class BucketApproveBody(BaseModel):
+    phase: str  # "transform" | "qa"
+
+
+@app.post("/api/buckets/state/{bucket}/approve")
+def api_buckets_approve(bucket: str, body: BucketApproveBody):
+    if body.phase not in ("transform", "qa"):
+        raise HTTPException(400, "phase must be 'transform' or 'qa'")
+    if state_manager.get_bucket_state(bucket) is None:
+        raise HTTPException(404, f"Bucket {bucket!r} not in state. Create it first via POST /api/buckets/state/{bucket} with ambiente+family.")
+    s = state_manager.approve_bucket_phase(bucket, body.phase)  # type: ignore
+    return s.model_dump()
+
+
+class BucketSkipBody(BaseModel):
+    reason: str
+
+
+@app.post("/api/buckets/state/{bucket}/skip")
+def api_buckets_skip(bucket: str, body: BucketSkipBody):
+    if state_manager.get_bucket_state(bucket) is None:
+        raise HTTPException(404, f"Bucket {bucket!r} not in state. Create it first via POST /api/buckets/state/{bucket} with ambiente+family.")
+    s = state_manager.skip_bucket(bucket, body.reason)
+    return s.model_dump()
+
+
+@app.post("/api/buckets/state/{bucket}/force_transform")
+def api_buckets_force_transform(bucket: str):
+    if state_manager.get_bucket_state(bucket) is None:
+        raise HTTPException(404, f"Bucket {bucket!r} not in state. Create it first via POST /api/buckets/state/{bucket} with ambiente+family.")
+    s = state_manager.force_transform_bucket(bucket)
+    return s.model_dump()
+
+
+@app.get("/api/buckets/{bucket}/articles")
+def api_bucket_articles(bucket: str, sort: str = "alpha", q: str | None = None,
+                        offset: int = 0, limit: int = 500):
+    """
+    Articles del bucket con flag de exclusion + cats wiki + primary bucket.
+    Combina article_viewer.list_articles() + derive_exclusions_for_bucket().
+    """
+    raw = article_viewer.list_articles(bucket, None, q, sort, offset, limit)
+    if not raw.get("ready"):
+        return raw
+    titles = [it["title"] for it in raw["items"]]
+    excl_states = state_manager.derive_exclusions_for_bucket(bucket, titles)
+    meta = article_viewer.META  # title -> {group, tier, word_count, categories, ...}
+    enriched = []
+    for it in raw["items"]:
+        es = excl_states.get(it["title"])
+        m = meta.get(it["title"], {})
+        enriched.append({
+            **it,
+            # Original wiki categories (community-curated, source of truth)
+            "wiki_categories": m.get("categories", []) or [],
+            # Primary bucket (where the classifier put this article as primary).
+            # If is_primary_here=True, primary_bucket == current bucket; else
+            # the article is here as also_in.
+            "primary_bucket": m.get("group", it.get("group")),
+            # Exclusion flags
+            "transform_excluded": es.transform_excluded if es else False,
+            "qa_excluded": es.qa_excluded if es else False,
+            "transform_excluded_global": es.transform_excluded_global if es else False,
+            "qa_excluded_global": es.qa_excluded_global if es else False,
+            "exclude_last_change_ts": es.last_change_ts if es else None,
+            "exclude_last_reason": es.last_reason if es else None,
+            # skipped_lenses: TODO — se calcula al generar multi-transform en Fase 4.1
+            "skipped_lenses": [],
+        })
+    return {**raw, "items": enriched}
+
+
+# ----- Exclusions -----
+
+
+class ExcludeBody(BaseModel):
+    title: str
+    bucket_lens: str  # nombre del bucket; "*" si scope=all_lenses
+    scope: str  # "this_lens" | "all_lenses"
+    action: str  # "exclude_transform" | "exclude_qa" | "exclude_both" |
+                  # "include_transform" | "include_qa" | "include_both"
+    reason: str | None = None
+
+
+def _validate_exclude_body(body: ExcludeBody) -> None:
+    if body.scope not in ("this_lens", "all_lenses"):
+        raise HTTPException(400, "scope must be 'this_lens' or 'all_lenses'")
+    if body.action not in (
+        "exclude_transform", "exclude_qa", "exclude_both",
+        "include_transform", "include_qa", "include_both",
+    ):
+        raise HTTPException(400, f"unknown action {body.action!r}")
+    if body.scope == "all_lenses":
+        if not body.reason or not body.reason.strip():
+            raise HTTPException(400, "reason is required when scope=all_lenses")
+        if body.bucket_lens != "*":
+            # Por convencion el frontend manda "*" cuando scope=all_lenses
+            raise HTTPException(400, "bucket_lens must be '*' when scope=all_lenses")
+    else:
+        if body.bucket_lens == "*":
+            raise HTTPException(400, "bucket_lens must be a real bucket when scope=this_lens")
+
+
+@app.post("/api/articles/exclude")
+def api_articles_exclude(body: ExcludeBody):
+    _validate_exclude_body(body)
+    if not body.action.startswith("exclude_"):
+        raise HTTPException(400, "use /api/articles/include for include_* actions")
+    entry = ExclusionEntry(
+        ts=state_manager.now_iso(),
+        title=body.title,
+        bucket_lens=body.bucket_lens,
+        scope=body.scope,  # type: ignore
+        action=body.action,  # type: ignore
+        reason=body.reason,
+    )
+    state_manager.append_exclusion(entry)
+    new_state = state_manager.derive_exclusion_state(body.title, body.bucket_lens if body.scope == "this_lens" else body.bucket_lens)
+    return {"ok": True, "state": new_state.model_dump()}
+
+
+@app.post("/api/articles/include")
+def api_articles_include(body: ExcludeBody):
+    _validate_exclude_body(body)
+    if not body.action.startswith("include_"):
+        raise HTTPException(400, "use /api/articles/exclude for exclude_* actions")
+    entry = ExclusionEntry(
+        ts=state_manager.now_iso(),
+        title=body.title,
+        bucket_lens=body.bucket_lens,
+        scope=body.scope,  # type: ignore
+        action=body.action,  # type: ignore
+        reason=body.reason,
+    )
+    state_manager.append_exclusion(entry)
+    new_state = state_manager.derive_exclusion_state(body.title, body.bucket_lens)
+    return {"ok": True, "state": new_state.model_dump()}
+
+
+@app.get("/api/articles/exclusions")
+def api_articles_exclusions(bucket: str):
+    """Estado actual de exclusiones para un bucket. Lista de titles excluidos."""
+    # Necesitamos los titles del bucket para derivar
+    raw = article_viewer.list_articles(bucket, None, None, "alpha", 0, 10000)
+    if not raw.get("ready"):
+        return {"ready": False, "items": []}
+    titles = [it["title"] for it in raw["items"]]
+    states = state_manager.derive_exclusions_for_bucket(bucket, titles)
+    out = []
+    for t, s in states.items():
+        if s.transform_excluded or s.qa_excluded:
+            out.append(s.model_dump())
+    return {"ready": True, "items": out}
+
+
+@app.get("/api/articles/exclusions/history")
+def api_articles_exclusion_history(title: str):
+    """Audit log completo para un title."""
+    entries = state_manager.exclusion_history_for_title(title)
+    return {"title": title, "events": [e.model_dump() for e in entries]}
+
+
+# ----- Universal headers (read-only in UI) -----
+
+
+HEADERS_DIR = Path(__file__).parent / "prompts" / "_headers"
+
+
+@app.get("/api/prompts/header")
+def api_prompts_header(phase: str):
+    """Read universal header for a phase. Read-only — file lives at
+    scraper/prompt_lab/prompts/_headers/{phase}.txt."""
+    if phase not in ("transform", "qa"):
+        raise HTTPException(400, "phase must be 'transform' or 'qa'")
+    p = HEADERS_DIR / f"{phase}.txt"
+    if not p.exists():
+        return {"phase": phase, "exists": False, "text": "",
+                "path": str(p.relative_to(Path(__file__).parents[2]))}
+    return {
+        "phase": phase,
+        "exists": True,
+        "text": p.read_text(encoding="utf-8"),
+        "path": str(p.relative_to(Path(__file__).parents[2])),
+    }
+
+
+# ----- Drafts -----
+
+
+DRAFTS_DIR = Path(__file__).parent / "prompts" / "drafts"
+
+
+def _draft_path(bucket: str, phase: str) -> Path:
+    if phase not in ("transform", "qa"):
+        raise HTTPException(400, "phase must be 'transform' or 'qa'")
+    safe_bucket = re.sub(r"[^A-Za-z0-9_]", "_", bucket)
+    return DRAFTS_DIR / f"{safe_bucket}_{phase}_draft.txt"
+
+
+@app.get("/api/prompts/draft")
+def api_prompts_draft_get(bucket: str, phase: str):
+    p = _draft_path(bucket, phase)
+    if not p.exists():
+        return {"bucket": bucket, "phase": phase, "exists": False, "text": ""}
+    return {
+        "bucket": bucket,
+        "phase": phase,
+        "exists": True,
+        "text": p.read_text(encoding="utf-8"),
+        "modified_at": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
+    }
+
+
+class DraftSaveBody(BaseModel):
+    bucket: str
+    phase: str
+    text: str
+
+
+@app.post("/api/prompts/draft")
+def api_prompts_draft_save(body: DraftSaveBody):
+    p = _draft_path(body.bucket, body.phase)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body.text, encoding="utf-8")
+    # Marcar bucket como drafting si corresponde (no si esta running/completed)
+    s = state_manager.get_bucket_state(body.bucket)
+    if s is not None:
+        cur_status = s.transform_status if body.phase == "transform" else s.qa_status
+        if cur_status in ("not_started", "ready", "drafting"):
+            field = f"{body.phase}_status"
+            try:
+                state_manager.update_bucket_state(body.bucket, **{field: "drafting"})
+            except ValueError:
+                pass
+    return {"ok": True, "bytes": len(body.text.encode("utf-8"))}
+
+
+class DraftPromoteBody(BaseModel):
+    bucket: str
+    phase: str
+    family: str  # bucket family (block/mob/item/...) — donde guardar el approved
+
+
+@app.post("/api/prompts/draft/promote")
+def api_prompts_draft_promote(body: DraftPromoteBody):
+    """Copia draft → approved (prompts/{phase}/{family}.txt) y marca bucket ready."""
+    if body.phase not in ("transform", "qa"):
+        raise HTTPException(400, "phase must be 'transform' or 'qa'")
+    src = _draft_path(body.bucket, body.phase)
+    if not src.exists():
+        raise HTTPException(404, "draft not found")
+    safe_family = re.sub(r"[^A-Za-z0-9_]", "_", body.family)
+    dst = Path(__file__).parent / "prompts" / body.phase / f"{safe_family}.txt"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    field = f"{body.phase}_status"
+    state_manager.update_bucket_state(body.bucket, **{field: "ready"})
+    return {"ok": True, "approved_path": str(dst.relative_to(Path(__file__).parents[2]))}
+
+
+@app.delete("/api/prompts/draft")
+def api_prompts_draft_delete(bucket: str, phase: str):
+    p = _draft_path(bucket, phase)
+    if p.exists():
+        p.unlink()
+    return {"ok": True}
+
+
+# ----- Run queue & history -----
+
+
+@app.get("/api/runs/queue")
+def api_runs_queue():
+    return state_manager.load_run_queue().model_dump()
+
+
+class EnqueueBody(BaseModel):
+    bucket_lens: str
+    phase: str  # "transform" | "qa"
+    mode: str  # "test_5" | "test_20" | "sample_50" | "full"
+    include_secondaries: bool = False
+    prompt_draft_path: str | None = None
+    # Per-run model params — snapshot at enqueue time, never overridden later
+    model: str = "qwen3:8b"
+    num_ctx: int = 4096
+    temperature: float = 0.0
+    no_think: bool = True
+
+
+@app.post("/api/runs/enqueue")
+def api_runs_enqueue(body: EnqueueBody):
+    if body.phase not in ("transform", "qa"):
+        raise HTTPException(400, "phase must be 'transform' or 'qa'")
+    if body.mode not in ("test_5", "test_20", "sample_50", "full"):
+        raise HTTPException(400, f"unknown mode {body.mode!r}")
+    try:
+        item = state_manager.enqueue_run(
+            body.bucket_lens, body.phase, body.mode,  # type: ignore
+            include_secondaries=body.include_secondaries,
+            prompt_draft_path=body.prompt_draft_path,
+            model=body.model,
+            num_ctx=body.num_ctx,
+            temperature=body.temperature,
+            no_think=body.no_think,
+        )
+    except ValueError as e:
+        raise HTTPException(409, str(e))  # 409 Conflict (queue full)
+    # Wake the batch worker — if idle, it'll promote and execute
+    batch_runner.signal()
+    return item.model_dump()
+
+
+@app.delete("/api/runs/queue/{run_id}")
+def api_runs_dequeue(run_id: str):
+    ok = state_manager.cancel_queued_run(run_id)
+    if not ok:
+        raise HTTPException(404, "run_id not in queue (may be current or already done)")
+    return {"ok": True}
+
+
+@app.get("/api/runs/output")
+def api_runs_output(bucket: str, phase: str, limit: int = 100, offset: int = 0):
+    """
+    Read the most recent items from the output JSONL for a (bucket, phase).
+    Used by the live feed during a batch run + retrospective viewing.
+    Returns newest-first.
+    """
+    if phase not in ("transform", "qa"):
+        raise HTTPException(400, "phase must be 'transform' or 'qa'")
+    out_path = batch_runner._output_path(bucket, phase)
+    if not out_path.exists():
+        return {"items": [], "total": 0}
+    items = []
+    try:
+        with open(out_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    items.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return {"items": [], "total": 0}
+    total = len(items)
+    items.reverse()  # newest first
+    page = items[offset: offset + limit]
+    return {"items": page, "total": total, "path": str(out_path.relative_to(Path(__file__).parents[2]))}
+
+
+@app.post("/api/runs/cancel")
+def api_runs_cancel():
+    """Signal the worker to stop the current run after the current item completes.
+    Partial output already written to the JSONL is preserved (resume support).
+    Queued runs are NOT cancelled — only the active one."""
+    if not batch_runner.is_running():
+        # Nothing to cancel
+        return {"ok": True, "was_running": False}
+    batch_runner.cancel_current()
+    return {"ok": True, "was_running": True}
+
+
+@app.get("/api/runs/history")
+def api_runs_history(bucket: str | None = None, limit: int = 100):
+    entries = state_manager.load_run_history(bucket=bucket)
+    # Newest first
+    entries.sort(key=lambda e: e.ts_start, reverse=True)
+    return {"items": [e.model_dump() for e in entries[:limit]]}
+
+
+# ----- Single-article test run (sync, no queue, no SSE) -----
+
+
+class SingleRunBody(BaseModel):
+    bucket_lens: str
+    phase: str  # 'transform' | 'qa'
+    title: str
+    prompt: str  # bucket-specific draft (without universal header)
+    model: str = "qwen3:8b"
+    num_ctx: int = 4096
+    temperature: float = 0.1
+    no_think: bool = True
+
+
+@app.post("/api/runs/single")
+def api_runs_single(body: SingleRunBody):
+    """
+    Execute the prompt against ONE article synchronously.
+    Concatenates: universal_header + bucket_specific + article_meta + article_text.
+    Blocks until ollama returns (~30-90s with qwen3:8b depending on output length).
+    Refuses if a batch run is currently active (concurrency: Mac M2 single-stream).
+    """
+    if body.phase not in ("transform", "qa"):
+        raise HTTPException(400, "phase must be 'transform' or 'qa'")
+
+    # Concurrency: refuse if a batch run is going (Mac M2 can't parallelize)
+    queue = state_manager.load_run_queue()
+    if queue.current is not None:
+        raise HTTPException(
+            409,
+            f"A batch run is currently in progress ({queue.current.bucket_lens} · "
+            f"{queue.current.phase} · {queue.current.mode}). Cancel it or wait, then retry."
+        )
+
+    # Load universal header
+    header_path = HEADERS_DIR / f"{body.phase}.txt"
+    universal = header_path.read_text(encoding="utf-8") if header_path.exists() else ""
+
+    # Load article text (cleaned version — the pre-transform source for both phases)
+    article = article_viewer.get_article(body.title, "cleaned")
+    if article is None:
+        raise HTTPException(404, f"Article {body.title!r} not found in cleaned version")
+
+    text_truncated = prepare_input(article.get("text", ""), max_words=800)
+    cats = article.get("categories", []) or []
+
+    # Build full prompt: header + bucket-specific + article block
+    full_prompt = (
+        f"{universal.strip()}\n\n"
+        f"{body.prompt.strip()}\n\n"
+        f"# Article\n\n"
+        f"Title: {body.title}\n"
+        f"Wiki categories: {', '.join(cats) if cats else '(none)'}\n"
+        f"Current lens: {body.bucket_lens}\n\n"
+        f"---\n\n"
+        f"{text_truncated}"
+    )
+
+    # Persist run start in run_history.jsonl for audit
+    run_id = state_manager.new_run_id()
+    state_manager.append_run_history(RunHistoryEntry(
+        run_id=run_id,
+        ts_start=state_manager.now_iso(),
+        bucket_lens=body.bucket_lens,
+        phase=body.phase,  # type: ignore
+        mode="single",
+        include_secondaries=False,
+        prompt_hash=state_manager.hash_text(body.prompt),
+        universal_header_hash=state_manager.hash_text(universal),
+        model=body.model,
+        num_ctx=body.num_ctx,
+        temperature=body.temperature,
+        status="running",
+        item_count=1,
+    ))
+
+    # Inference
+    t0 = time.time()
+    try:
+        gen_options = {}
+        # qwen3 supports /no_think system flag — if requested, prepend
+        prompt_to_send = full_prompt
+        if body.no_think:
+            prompt_to_send = "/no_think\n" + full_prompt
+        result = generate(
+            prompt_to_send,
+            model=body.model,
+            num_ctx=body.num_ctx,
+            temperature=body.temperature,
+        )
+        raw = result.response
+        duration = result.total_duration_s
+        error = None
+        status = "completed"
+        success_count = 1
+        error_count = 0
+    except Exception as e:
+        raw = ""
+        duration = time.time() - t0
+        error = str(e)
+        status = "error"
+        success_count = 0
+        error_count = 1
+
+    # Update run_history with final state
+    state_manager.update_run_history(
+        run_id,
+        ts_end=state_manager.now_iso(),
+        status=status,  # type: ignore
+        success_count=success_count,
+        error_count=error_count,
+    )
+
+    # Normalize transform outputs to canonical format
+    normalized = ""
+    normalize_meta = None
+    if body.phase == "transform" and raw:
+        try:
+            norm_res = normalize_output(raw, expected_title=body.title)
+            normalized = norm_res.normalized
+            normalize_meta = {
+                "format_detected": norm_res.raw_format_detected,
+                "transforms_count": len(norm_res.transforms_applied),
+                "transforms_applied": norm_res.transforms_applied,
+                "warnings": norm_res.warnings,
+                "sections": list(norm_res.sections.keys()),
+            }
+        except Exception as norm_err:
+            normalize_meta = {"error": str(norm_err)}
+
+    return {
+        "run_id": run_id,
+        "title": body.title,
+        "bucket_lens": body.bucket_lens,
+        "phase": body.phase,
+        "model": body.model,
+        "duration": round(duration, 2),
+        "raw_response": raw,
+        "normalized_response": normalized,
+        "normalize_meta": normalize_meta,
+        "error": error,
+        "input_chars": len(full_prompt),
+        "approx_input_tokens": len(full_prompt) // 4,
+    }
 
 
 # ----- Static files -----

@@ -1,0 +1,92 @@
+This article describes a Minecraft mob (an entity with AI). Apply the
+universal header rules with the mob-specific specifications below.
+
+# Properties fields
+
+Emit only the fields whose value is real and documented in the article.
+Omit the entire line for any field that does not apply, is undocumented,
+or has no meaningful value.
+
+Type accepts only one of: Passive, Hostile, Neutral, Boss, Tameable, or
+Rideable. Health is a number. Damage is a number, and the line is
+omitted entirely if the mob does not attack. Walking speed is a decimal.
+Swimming speed is a decimal and the line is omitted if the mob is not
+aquatic-capable. Flying speed is a decimal and the line is omitted if
+the mob does not fly. Spawn is a comma-separated list of biomes or
+structures. Spawn light level is a number from 0 to 15 or the word
+`any`, and the line is omitted if not documented. XP drop is a number
+or hyphen-separated range, and the line is omitted if no specific
+number is stated in the article (do not infer ranges from `yields
+experience`). Tameable, Rideable, and Breedable each accept only the
+value `Yes`; if the mob is not tameable, not rideable, or not breedable,
+omit the entire line. Never write `Tameable: No`, `Rideable: No`, or
+`Breedable: No`.
+
+# Details focus
+
+Inside the Details section, describe in prose: AI behavior (how the mob
+pursues, what scares it, breeding mechanics, idle behavior); combat
+patterns (attack interval, projectiles, special abilities) when
+applicable; drops (regular drops, rare drops, Looting modifier effects,
+with prose describing drop conditions); variants (color, biome, baby
+form); and interactions with other mobs and players. All of this is
+prose. There are no bullet points, no sub-headers, no bold inside the
+Details paragraphs.
+
+# Lens-specific focus
+
+When the Current lens is a secondary lens (an `also_in`), emphasize the
+matching aspect inside Details. For Tameable_mobs, emphasize the taming
+mechanic, the required item, post-tame behavior, and commands like sit
+or follow. For Bosses, emphasize phases, summoning ritual, unique
+drops, achievement unlocked, and music change. For Aquatic_mobs,
+emphasize water behavior, out-of-water consequences, and underwater
+breeding. For Undead_mobs, emphasize Smite enchantment effect, healing
+from harming potions, and day/night burning. For Nether_mobs, emphasize
+Nether-only spawn, lava immunity, and piglin/hoglin interactions.
+
+# Anti-hallucination
+
+The article text is the only source of truth. Do not add facts from
+your training data, even if you "know" them. If a stat or behavior is
+not in the article, omit it; do not infer, approximate, or invent. Do
+not invent percentages, drop chances, biomes, or numeric stats. If
+unsure whether a behavior applies, leave it out.
+
+# Output format anchor
+
+Match this format exactly. Plain markdown headers. Field lines are
+plain `Key: value`, one per line, with no bullet markers and no bold
+on field names. All drops, spawn rules, version differences, and
+variants live inside Details as prose, never as separate sections.
+
+# Camel
+## Overview
+A camel is a large passive mob found in deserts and desert villages. It can be saddled and ridden by up to two players at once.
+
+## Properties
+Type: Passive
+Health: 32
+Walking speed: 3.885
+Spawn: Desert village, Desert
+XP drop: 1-3
+Tameable: Yes
+Rideable: Yes
+Breedable: Yes
+
+## Details
+Camels wander aimlessly, avoiding hazards and obstacles, and occasionally sit for two to seven seconds before standing again. They flee instantly when harmed even while sitting. A sitting camel cannot be pushed by players or mobs, and will not stand if solid blocks are above it because doing so would inflict suffocation damage. Camels can step up 1.5 blocks high. They heal 2 HP per cactus consumed and regenerate 1 HP every 900 game ticks. Adult camels drop 1 to 3 experience when killed by a player.
+
+## Obtaining
+Camels spawn naturally in desert villages, with one camel per village during world generation. They can also be bred in captivity using cactus.
+
+The example above shows the exact format and discipline. Notice that
+the Damage line is omitted because camels do not attack. Swimming
+speed, Flying speed, and Spawn light level are omitted because the
+article does not document them. Tameable, Rideable, and Breedable
+each appear only because their value is Yes. There is no Drops or
+Variants section — drops and variants would go inside Details as
+prose. There is no Trivia section because no relevant in-game
+history justifies one.
+
+Apply this same discipline to the article below.

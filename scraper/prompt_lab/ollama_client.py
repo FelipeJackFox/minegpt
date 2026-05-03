@@ -28,8 +28,8 @@ def generate(
     prompt: str,
     model: str = "qwen3:8b",
     num_ctx: int = 4096,
-    temperature: float = 0.1,
-    timeout: int = 240,
+    temperature: float = 0.0,
+    timeout: int = 900,
 ) -> GenResult:
     """
     Llama Ollama y devuelve la respuesta. Lanza excepcion si falla.
