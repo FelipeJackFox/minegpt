@@ -60,7 +60,6 @@ def normalize_to_text(entry: dict) -> str:
 
     Los datasets vienen en diferentes formatos:
     - Wiki: {"title": ..., "text": ...}
-    - Reddit: {"title": ..., "text": ...}
     - WikiText: {"text": ...}
     - TinyStories: {"text": ...}
     - Alpaca: {"instruction": ..., "output": ...}  ← se guarda aparte
@@ -86,7 +85,7 @@ def run(general_ratio: float = 0.70, minecraft_ratio: float = 0.20, oversample_r
 
     Args:
         general_ratio: Proporción de texto general (WikiText + TinyStories)
-        minecraft_ratio: Proporción de Minecraft wiki + Reddit
+        minecraft_ratio: Proporción de Minecraft wiki
         oversample_ratio: Proporción extra de Minecraft (repetido)
     """
     assert abs(general_ratio + minecraft_ratio + oversample_ratio - 1.0) < 0.01, \
@@ -102,13 +101,12 @@ def run(general_ratio: float = 0.70, minecraft_ratio: float = 0.20, oversample_r
     tinystories = load_jsonl(RAW_DIR / "general" / "tinystories.jsonl")
     general = wikitext + tinystories
 
-    # Minecraft
+    # Minecraft (Reddit dropped 2026-04-26 — wiki tutorial bucket cubre necesidad conversacional)
     wiki_mc = load_jsonl(PROCESSED_DIR / "wiki_clean.jsonl")
-    reddit_mc = load_jsonl(PROCESSED_DIR / "reddit_clean.jsonl")
-    minecraft = wiki_mc + reddit_mc
+    minecraft = wiki_mc
 
     log.info(f"General: {len(general):,} textos ({len(wikitext):,} WikiText + {len(tinystories):,} TinyStories)")
-    log.info(f"Minecraft: {len(minecraft):,} textos ({len(wiki_mc):,} wiki + {len(reddit_mc):,} Reddit)")
+    log.info(f"Minecraft: {len(minecraft):,} textos (wiki only)")
 
     if not general or not minecraft:
         log.error("Faltan datasets. Ejecuta download.py y clean.py primero.")
