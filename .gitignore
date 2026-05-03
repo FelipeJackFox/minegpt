@@ -34,6 +34,12 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Prompt Lab run history
 scraper/prompt_lab/history/
-raw_data/
+
+# Local scratch (hardening iteration logs, audit JSONs, etc.)
+.tmp_audit/
+
+# Claude session memories (live in user home, not project)
 .claude/

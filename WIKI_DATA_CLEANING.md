@@ -1,7 +1,17 @@
 # MineGPT — Wiki Data Cleaning & Transformation Plan
 
-> Referencia persistente entre sesiones de Claude Code.
-> Última actualización: 2026-04-07
+> **Status (2026-05-02): heavily superseded by hardening v2.**
+> Phases 1-2 (filter, regex_clean) sections below are still accurate.
+> Phase 3 (spin-off classification) postponed for v2 (M4 hardware).
+> Phases 4b-4e (Qwen body transformation) are **DEPRECATED** — wiki body
+> goes directly into corpus after `scraper/hardening_v2.py`. Qwen reserved for Q&A.
+> See `HARDENING_V2_RESULTS.md` for the actual current state, and
+> `QA_GENERATION_PLAN.md` for the Q&A pipeline that replaces transformation.
+>
+> Final dataset: 7,135 main + 2,834 qa_direct + 174 dropped (~7.62M words),
+> not the ~6-7.3M figure estimated in the original plan below.
+>
+> Última actualización: 2026-04-07 (banner agregado 2026-05-02)
 
 ---
 
