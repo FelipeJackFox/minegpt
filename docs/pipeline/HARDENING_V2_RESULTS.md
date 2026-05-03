@@ -2,8 +2,9 @@
 
 > Final state of the second-pass regex hardening pipeline.
 > Pipeline source: `scraper/hardening_v2.py` (12 phases, idempotent).
-> Spec we worked from: `HARDENING_V2_PLAN.md` (with implementation deltas
-> documented in its banner).
+> Spec we worked from: `../archive/HARDENING_V2_PLAN.md` (now archived).
+> Implementation diverged on ~5 points, captured in "What was preserved" +
+> "Iteration log" sections below.
 >
 > Run completed: 2026-05-02 (after 9 iterations on user feedback).
 

@@ -863,7 +863,7 @@ After this, Qwen is reserved for **Q&A multi-lente generation only** (Phase G).
 
 - Phase A audit reports (10 agents): consolidated.
 - Phase C validation reports (3 agents): consolidated. **GO with caveats** unanimous.
-- `PHASE4_TRANSFORMATION_PLAN.md` — original plan (Qwen body transformation deprecated).
-- `PROMPT_TEMPLATES.md` — kept for Q&A phase only.
-- `CLASSIFIER_REDESIGN.md` — taxonomy used for routing.
-- `WIKI_DATA_CLEANING.md` — Phase 1+2 (already done).
+- `../prompts/PHASE4_TRANSFORMATION_PLAN.md` — original plan (Qwen body transformation deprecated).
+- `../prompts/PROMPT_TEMPLATES.md` — kept for Q&A phase only.
+- `../archive/CLASSIFIER_REDESIGN.md` — taxonomy used for routing.
+- `WIKI_DATA_CLEANING.md` — Phase 1+2 (already done; same directory).

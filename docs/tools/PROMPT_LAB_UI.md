@@ -1,7 +1,7 @@
 # MineGPT — Prompt Lab UI
 
 > Reference for the Prompt Lab dev tool's current UI architecture.
-> Replaces `docs/archive/PHASE4_UX_DESIGN.md` (which described the original 3-tab design before the merged tab + compare-mode redesign).
+> Replaces `../archive/PHASE4_UX_DESIGN.md` (which described the original 3-tab design before the merged tab + compare-mode redesign).
 >
 > Tool runs on Mac Mini at `http://mini-fzamorano:7860`. Code lives in `scraper/prompt_lab/`.
 > See `reference_macmini_deployment.md` (memory) for deploy workflow.

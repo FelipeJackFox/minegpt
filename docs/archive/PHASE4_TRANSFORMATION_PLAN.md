@@ -5,8 +5,8 @@
 > goes directly into training corpus after `scraper/hardening_v2.py`. Qwen
 > reserved for Q&A only.
 >
-> See `QA_GENERATION_PLAN.md` for the Q&A pipeline (this doc's Q&A halves
-> consolidated there).
+> See `../pipeline/QA_GENERATION_PLAN.md` for the Q&A pipeline (this doc's
+> Q&A halves consolidated there).
 >
 > Sections 1-3 ("Filosofía", "Cost estimate", "Tabla por bucket") describe the
 > transform path that no longer exists. Q&A philosophy + per-bucket Q&A types
@@ -593,8 +593,8 @@ Mismo tooling, prompt de Q&A en lugar de transform. Por bucket:
 ## Lo que esto significa para el chat actual
 
 Tenemos suficiente contexto guardado entre:
-- `CLASSIFIER_REDESIGN.md` (taxonomía cat-driven)
-- `WIKI_DATA_CLEANING.md` (plan original Phase 1+2 hecho, Phase 3 spinoffs pospuesto)
+- `../archive/CLASSIFIER_REDESIGN.md` (taxonomía cat-driven, archivado)
+- `../pipeline/WIKI_DATA_CLEANING.md` (plan original Phase 1+2 hecho, Phase 3 spinoffs pospuesto)
 - Este doc (Phase 4 + 5 + tooling redesign)
 - Memoria del proyecto (`project_minegpt.md`, `project_classifier_notes.md`, `reference_external_sources.md`, `feedback_specialize_subgroups.md`)
 - Auditoría de 130 flags en `misclassifications.jsonl`

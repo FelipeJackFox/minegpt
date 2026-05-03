@@ -1,121 +1,27 @@
-# MineGPT — Prompt Templates (Phase 4 Transform + Phase 5 Q&A)
+# MineGPT — Q&A Prompt Templates
 
-> **Status (2026-05-02): TRANSFORM HALF DEPRECATED.**
-> Transform sections (universal Transform header + per-bucket Transform prompts)
-> are no longer used — Qwen body transformation abandoned 2026-04-27. Q&A halves
-> remain valid; consolidated into `QA_GENERATION_PLAN.md`.
->
-> Original purpose: fuente única de verdad para prompts de transformación y Q&A.
-> Diseñado para qwen3:8b / qwen3:14b corriendo via Ollama en Mac Mini M2.
-> Target: LLM custom de 125-200M params entrenado desde cero.
->
-> Fecha: 2026-04-26 (banner 2026-05-02)
+Source of truth for the Q&A generation prompts run on Mac Mini against
+qwen3:8b / qwen3:14b. Target output: ~50K-110K Q&A pairs over the hardened
+corpus, used for training the v1 model (125-200M params).
 
----
+> Last updated: 2026-05-03
+> Replaces `../archive/PROMPT_TEMPLATES_v1_with_transform.md` — the v1 doc had
+> both Transform and Q&A halves; transform was deprecated 2026-04-27. This is
+> the Q&A-only successor.
 
-## Filosofía
+## Strategy
 
-### Estructura de 3 capas por prompt
+Three-layer prompt construction, same pattern as the deprecated transform path:
 
-```
-[CAPA 1: HEADER UNIVERSAL]   ← idéntico para TODOS los transforms (o todos los Q&A)
-  Reglas de formato, lenguaje, estructura.
+1. **Universal Q&A header** (read-only, ~400 tokens) — output format, quantity rules, question/answer rules, forbidden patterns.
+2. **Bucket-specific Q&A** (editable per family, ~50-200 tokens) — guides which question types are appropriate.
+3. **User message** — article text + meta (title, primary bucket, current lens).
 
-[CAPA 2: BUCKET-SPECIFIC]    ← varía por familia (block/mob/item/plant/mechanic/command)
-  Lista de campos ## Properties para esa familia.
-  Foco específico cuando es lente also_in.
+Files live in `scraper/prompt_lab/prompts/_headers/qa.txt` (universal) and
+`scraper/prompt_lab/prompts/qa/<family>.txt` (per-bucket). Edited via the
+Prompt Lab UI; full reference in `../tools/PROMPT_LAB_UI.md`.
 
-[CAPA 3: USER MESSAGE]       ← varía por artículo
-  Texto pre-transform + cats originales.
-```
-
-### Por qué header universal compartido
-
-1. **Consistencia**: 200+ buckets futuros usan las mismas reglas. Una regla en un solo lugar.
-2. **Iteración barata**: bug detectado en bucket 87 → fix en header → todos los buckets futuros heredan.
-3. **Prompt caching de Ollama**: header idéntico entre calls del mismo bucket → KV cache evita recomputarlo.
-4. **Auditoría limpia**: una sola fuente de verdad para reglas globales.
-
-### Reglas globales de formato (la "ley" del proyecto)
-
-Estas reglas NO se violan nunca, las codifica el header universal:
-
-- **Numéricos**: número puro, sin unidad pegada. `Hardness: 1.5`, no `Hardness: 1.5 hearts`.
-- **Booleanos**: solo `Yes` o `No`. Nunca `True/False`, `yes/no`, `Y/N`.
-- **Rangos**: con guión. `Damage: 1-3`, no `Damage: 1 to 3`.
-- **Listas cortas**: separadas por coma. `Spawn: Plains, Forest, Taiga`.
-- **Sin tablas markdown** (`|`, `---`).
-- **Sin emojis o unicode** (♥, ★, ✓). Usar palabras.
-- **Sin lenguaje promocional** ("iconic", "fascinating", "amazing", "must-have").
-- **Sin meta-referencias** ("según el wiki", "as you may know").
-- **Sin notas inline** ("Note:", "TIP:", "WARNING:").
-- **Idioma**: inglés, presente, tono neutral, factual, enciclopédico.
-- **Omitir si no aplica**: si un campo de Properties no aplica al artículo, NO emitirlo. No escribir `Damage: N/A`, `Damage: -`, etc.
-
----
-
-## Header universal — Transform
-
-Texto literal que va al modelo:
-
-```text
-You are an assistant that rewrites Minecraft Wiki articles (vanilla,
-Java/Bedrock Edition) into a consistent structured format for training
-a small language model.
-
-# Output structure (strict)
-
-# {Article name, exactly as given}
-## Overview
-## Properties
-## Details
-## Obtaining       (omit if not applicable)
-## Trivia          (omit if no relevant lore exists)
-
-# Formatting rules
-
-## Properties section
-- One key per line, format: `Key: value`
-- Numeric values: bare numbers, no units. Write `Hardness: 1.5`, not
-  `Hardness: 1.5 hearts` or `Hardness: 1.5 (one and a half)`.
-- Boolean: only `Yes` or `No`. Never `True/False`, `yes/no`, `Y/N`.
-- Range: hyphen-separated. `Damage: 1-3`, not `Damage: 1 to 3`.
-- List values: comma-separated. `Spawn: Plains, Forest, Taiga`.
-- If a field does not apply to this article, OMIT the line entirely.
-  Do not write `Damage: N/A`, `Damage: -`, or `Damage: none`.
-
-## Details section
-- Dense factual prose, present tense.
-- Explain mechanics, interactions, edge cases.
-- No bullet points, no sub-headers.
-
-## Overview section
-- 1-2 sentences. State what the entity is and where/when it appears.
-- No subjective adjectives ("iconic", "fascinating", "amazing").
-
-# Forbidden
-
-- Markdown tables (no `|`, no `---`).
-- Emojis or unicode symbols (no ♥, ★, ✓). Use words.
-- Promotional language ("fan-favorite", "must-have").
-- Meta references ("according to the wiki", "as you may know").
-- Inline notes ("Note:", "TIP:", "WARNING:").
-- Repeating the prompt or adding "Here is the result:".
-
-# Language
-
-- English. Neutral, factual, encyclopedic tone.
-- Present tense.
-- Subject: the article name, or pronoun when clear.
-
-Output ONLY the markdown. Nothing else.
-```
-
----
-
-## Header universal — Q&A
-
-Texto literal que va al modelo:
+## Universal Q&A header (literal text sent to model)
 
 ```text
 You are an assistant that generates question-answer pairs from a
@@ -175,11 +81,7 @@ generate fewer pairs. Quality over quantity.
 Output ONLY the Q:/A: pairs. Nothing else.
 ```
 
----
-
 ## Mapping bucket → family
-
-Este mapeo determina qué bucket-specific se concatena al header universal.
 
 ```
 FAMILY = "block":
@@ -200,7 +102,7 @@ FAMILY = "item":
   Potions, Music_Discs, Mob_food, Items
 
 FAMILY = "plant":
-  Plants
+  Plants, Crops, Saplings, Flowers, Trees, Vegetation
 
 FAMILY = "mechanic":
   Game_mechanics, Effects, Status_effects, Potion_effects, Enchantments,
@@ -217,434 +119,19 @@ FAMILY = "command":
 FAMILY = "crafting_recipe":
   Crafting_recipes (virtual bucket from `Crafting/...` titles)
 
+FAMILY = "disambiguation":
+  Disambiguation_pages (route_qa_direct after hardening v2)
+  Set_index_pages (with prose; route_qa_direct)
+
 FAMILY = "version":
-  Bedrock_Edition_versions, Java_Edition_versions, Pocket_Edition_versions,
-  Versions
-  → Special handling: extract player-facing changelog only
-
-FAMILY = "person":
-  People, Companies, Events, History, Community_business
-  → Solo regex clean, NO transform
-
-FAMILY = "tutorial":
-  Tutorials, Java_guides, Bedrock_guides, Redstone_tutorials
-  → Solo regex clean, NO transform
-
-FAMILY = "external":
-  external_wikipedia, external_notch_blog, external_youtube
-  → NO transform, ya están limpios
+  Bedrock_Edition_versions, Java_Edition_versions, Pocket_Edition_versions
+  (route_qa_direct after hardening v2 — snapshot codes are too specific
+  for direct training but useful for "when was X added?" Q&A)
 ```
 
----
+## Bucket-specific Q&A guidance
 
-## Bucket-specific — Transform
-
-### Family: `block`
-
-```text
-This article describes a Minecraft block. Apply the universal header
-rules with these block-specific specifications.
-
-# Properties fields (emit only those that apply)
-
-Type: {Solid/Non-solid/Liquid/Falling/Block entity/Light source/Job block/...}
-Hardness: {number}
-Blast resistance: {number}
-Tool: {axe/pickaxe/shovel/shears/hoe/any/none}
-Mineable with: {wood/stone/iron/diamond/netherite/any}
-Renewable: {Yes/No}
-Stackable: {Yes (64) / Yes (16) / No}
-Flammable: {Yes/No}
-Light level: {0-15}
-Light filter: {0-15, omit if 0 or not relevant}
-Transparent: {Yes/No}
-
-# Details section focus
-
-Describe in prose:
-- Mining mechanics, drop conditions (with/without Silk Touch, Fortune)
-- Interactions with redstone, water, lava, gravity
-- Special behaviors (e.g. crafting station GUI, sound when broken)
-- Variants (planks types, color variants if relevant)
-
-# Lens-specific focus (when this article is being transformed under a
-secondary lens via also_in)
-
-If lens is "Redstone": emphasize how redstone activates this block,
-what the block does when powered, signal strength behavior.
-
-If lens is "Block_entities": emphasize NBT data, GUI, saved state,
-inventory if any.
-
-If lens is "Hazardous_blocks": emphasize damage type, damage amount,
-mob behavior near it.
-
-If lens is "Light_sources": emphasize light level, range, what triggers
-light emission.
-
-If lens is "Mob_food": emphasize which mobs eat or breed with this item.
-
-If lens is "Job_blocks": emphasize which villager profession claims it,
-work patterns, particles when in use.
-
-If lens is "Falling_blocks": emphasize fall damage, support requirements,
-duplication mechanics if applicable.
-
-If lens is "Mechanisms": emphasize activation conditions, output,
-redstone integration.
-```
-
-### Family: `mob`
-
-```text
-This article describes a Minecraft mob (entity with AI). Apply the
-universal header rules with these mob-specific specifications.
-
-# Properties fields (emit only those that apply)
-
-Type: {Passive/Hostile/Neutral/Boss/Tameable/Rideable/...}
-Health: {number}
-Damage: {number, omit if mob does not attack}
-Walking speed: {decimal}
-Swimming speed: {decimal, omit if not aquatic-capable}
-Flying speed: {decimal, omit if not flying}
-Spawn: {biomes, comma-separated}
-Spawn light level: {0-15 / any}
-XP drop: {number or range}
-Tameable: {Yes/No}
-Rideable: {Yes/No}
-Breedable: {Yes/No}
-
-# Details section focus
-
-Describe in prose:
-- AI behavior (how it pursues, what scares it, breeding mechanics)
-- Combat patterns (attack interval, projectiles, special abilities)
-- Drops (regular drops, rare drops, Looting modifier effects, with prose
-  describing drop conditions; the Properties section already lists XP)
-- Variants (color, biome variants, baby form)
-- Interactions with other mobs and players
-
-# Lens-specific focus
-
-If lens is "Tameable_mobs": emphasize taming mechanic, required item,
-post-tame behavior, commands ("sit", "follow").
-
-If lens is "Bosses": emphasize phases, summoning ritual, drops,
-achievement unlocked, music change.
-
-If lens is "Aquatic_mobs": emphasize water behavior, out-of-water
-consequences, breeding underwater.
-
-If lens is "Undead_mobs": emphasize Smite enchantment effect, healing
-from harming potions, day/night burning.
-
-If lens is "Nether_mobs": emphasize Nether-only spawn, lava immunity,
-piglin/hoglin interactions.
-```
-
-### Family: `item`
-
-```text
-This article describes a Minecraft item (held in inventory). Apply
-the universal header rules with these item-specific specifications.
-
-# Properties fields (emit only those that apply)
-
-Type: {Tool/Weapon/Armor/Food/Material/Fuel/Music disc/Map/Banner/...}
-Stack: {1/16/64}
-Renewable: {Yes/No}
-Durability: {number, omit if not applicable}
-Damage: {number, omit if not weapon/tool}
-Mining speed: {number, omit if not tool}
-Hunger restored: {number, omit if not food}
-Saturation: {decimal, omit if not food}
-Defense: {number, omit if not armor}
-Toughness: {number, omit if not armor}
-Knockback resistance: {decimal, omit if not armor}
-Enchantability: {number, omit if not enchantable}
-Burn time: {seconds, omit if not fuel}
-
-# Details section focus
-
-Describe in prose:
-- Use cases (combat, crafting ingredient, ritual, decoration)
-- Crafting outputs (what it makes when used)
-- Special behaviors (eating effects, weapon mechanics, repair logic)
-- Compatible enchantments, durability formulas
-
-# Lens-specific focus
-
-If lens is "Brewing_ingredients": emphasize potion recipes, base potion,
-modifier role, redstone/glowstone interaction.
-
-If lens is "Mob_food": emphasize which mobs eat it for healing, breeding,
-or taming.
-
-If lens is "Music_Discs": emphasize obtain method, play mechanism,
-length, composer.
-
-If lens is "Raw_materials": emphasize smelting recipe, yield, biomes/
-structures where the source block is found.
-
-If lens is "Food": emphasize hunger restored, saturation, eating speed,
-side effects (regen, poison, etc.).
-
-If lens is "Tools": emphasize tier, durability, mining speed by material,
-attack damage as melee weapon.
-
-If lens is "Armor": emphasize defense per slot, durability, special
-effects (e.g. Turtle Shell water breathing).
-
-If lens is "Weapons": emphasize damage, attack speed, knockback,
-critical hit behavior.
-```
-
-### Family: `plant`
-
-```text
-This article describes a Minecraft plant (organic block or item that
-grows or is grown). Apply the universal header rules with these
-plant-specific specifications.
-
-# Properties fields (emit only those that apply)
-
-Type: {Crop/Tree/Bush/Flower/Aquatic plant/Fungus/Vine/Sapling/...}
-Renewable: {Yes/No}
-Growth stages: {number}
-Light requirement: {0-15 minimum}
-Soil: {Dirt/Farmland/Sand/Clay/Mud/Soul Sand/...}
-Biomes: {comma-separated}
-Bonemealable: {Yes/No}
-Edible: {Yes/No}
-
-# Details section focus
-
-Describe in prose:
-- Growth mechanics (speed, conditions, water proximity)
-- Harvesting (drops with/without Fortune, breaking by hand vs tool)
-- Generation in world (which structures, biome density)
-- Cooking or processing if applicable
-- Composter compatibility, bone meal interactions
-
-# Lens-specific focus
-
-If lens is "Mob_food": which animals eat or are bred by this plant.
-
-If lens is "Brewing_ingredients": potion role.
-
-If lens is "Items": stack size, where the item form is used.
-```
-
-### Family: `mechanic`
-
-```text
-This article describes a Minecraft game mechanic, status effect, or
-enchantment (an abstract gameplay concept, not a physical entity).
-Apply the universal header rules with these specifications.
-
-# Properties fields (emit only those that apply)
-
-Type: {Game mechanic/Status effect/Enchantment/Game term}
-Triggered by: {event or action that activates it}
-Duration: {seconds or "infinite", omit if not time-bound}
-Particle: {color or visual indicator, omit if not status effect}
-Max level: {number, only enchantments}
-Compatible with: {item types, only enchantments}
-Treasure: {Yes/No, only enchantments}
-Curse: {Yes/No, only enchantments}
-Mutually exclusive with: {other effects/enchantments, comma-separated}
-
-# Details section focus
-
-Describe in prose:
-- What it does mechanically (numerical effect on stats, gameplay change)
-- How it interacts with other mechanics (stacking, cancellation)
-- Edge cases (level 0, max level, removal with milk bucket)
-- Practical examples
-
-# Lens-specific focus
-
-If lens is "Status_effects": emphasize particle color, sources of the
-effect (potion, mob attack, beacon), removal methods, level scaling.
-
-If lens is "Game_mechanics": emphasize formula, constants, edge cases,
-version differences.
-
-If lens is "Enchantments": emphasize compatible items, levels, treasure
-status, curse status, conflicting enchantments.
-```
-
-### Family: `world`
-
-```text
-This article describes a Minecraft world feature (biome, structure,
-generated feature, dimension). Apply the universal header rules with
-these specifications.
-
-# Properties fields (emit only those that apply)
-
-Type: {Biome/Structure/Feature/Dimension}
-Dimension: {Overworld/Nether/End}
-Climate: {Temperate/Cold/Warm/Snowy/...}
-Temperature: {decimal, only biomes}
-Downfall: {Rain/Snow/None}
-Generation: {Surface/Underground/Cave/Sky/...}
-Mobs: {primary mobs spawning here, comma-separated}
-Structures: {structures generating here, comma-separated, only biomes}
-
-# Details section focus
-
-Describe in prose:
-- Visual appearance (terrain, foliage, sky color, fog)
-- Block composition (top blocks, sub-surface, ores)
-- Mob spawning (specific to this biome/structure)
-- Loot (for structures: chest contents, rare items)
-- Music or ambient sounds
-- Generation logic (depth, frequency, world seed effects)
-
-# Lens-specific focus
-
-If lens is "Generated_structures": emphasize loot tables, mob spawners,
-trap mechanics, finding strategy.
-
-If lens is "Generated_features": emphasize generation conditions,
-density, biome restrictions.
-```
-
-### Family: `command` (overrides universal structure)
-
-```text
-This article describes a Minecraft command. Use this STRUCTURE INSTEAD
-of the universal Overview/Properties/Details structure. The universal
-formatting rules (no emojis, no tables, no marketing language) still
-apply.
-
-# Output structure
-
-# /{command name}
-
-## Syntax
-{full syntax with required arguments in <angle brackets> and optional
-arguments in [square brackets], following Minecraft conventions}
-
-## Edition support
-Java Edition: {Yes/No, since version}
-Bedrock Edition: {Yes/No, since version}
-
-## Permission level
-{0-4 for Java, equivalent for Bedrock}
-
-## Description
-{1-3 paragraphs explaining what the command does, side effects,
-interactions with game state. Prose, no bullets.}
-
-## Arguments
-{argname}: {type, description, default value if any}
-{argname}: {type, description, default value if any}
-
-## Examples
-/{example with explanation}
-/{another example with explanation}
-
-## Trivia
-{optional, only if there is documented history or removed behavior}
-
-# Notes
-
-- Argument names use Minecraft conventions: <required> for mandatory,
-  [optional] for optional.
-- Examples must be runnable as-is (no placeholder text).
-- Description: prose, no bullet points.
-```
-
-### Family: `crafting_recipe` (JSON output, not Qwen prose)
-
-```text
-This is a Minecraft crafting recipe. Output STRICTLY a JSON object,
-no markdown, no prose, no explanation, no code fences.
-
-# Output schema
-
-{
-  "result": "{item id, lowercase, snake_case, e.g. 'iron_pickaxe'}",
-  "result_count": {integer},
-  "shape": "{shaped|shapeless|smelting|blasting|smoking|campfire|stonecutting|smithing|brewing}",
-  "pattern": ["{row 1}", "{row 2}", "{row 3}"],
-  "key": {
-    "{single character}": "{ingredient item id}"
-  },
-  "ingredients": ["{item ids}"],
-  "experience": {decimal},
-  "cooking_time": {integer ticks}
-}
-
-Rules:
-- "pattern" and "key" are used for shaped recipes only. Set to null
-  otherwise.
-- "ingredients" is used for shapeless recipes only. Set to null otherwise.
-- "experience" and "cooking_time" only apply to smelting/blasting/smoking/
-  campfire. Set to null for other recipe types.
-- Use null for fields that don't apply. Do not omit them.
-
-Output ONLY the JSON object. No markdown fences, no commentary.
-```
-
-### Family: `version` (player-facing changelog extraction)
-
-```text
-This article is a Minecraft version page (release notes, snapshot,
-beta, or preview). Extract ONLY player-facing changes. Discard
-protocol-level technical details, server admin commands not used by
-typical players, and internal refactors.
-
-# Output structure
-
-# {Version name, exactly as given}
-
-## Release date
-{YYYY-MM-DD or "Unreleased" or "Unknown"}
-
-## Type
-{Release/Snapshot/Beta/Preview/Pre-release/Release candidate}
-
-## Edition
-{Java Edition/Bedrock Edition/Pocket Edition/Education Edition}
-
-## Highlights
-{2-5 bullet-style sentences as plain prose, separated by blank lines.
-Each one names a major feature added or major change. NO bullets, NO
-asterisks, just prose paragraphs.}
-
-## Additions
-{Each new block, item, mob, mechanic, biome, structure as a separate
-prose paragraph. Group related items.}
-
-## Changes
-{Each behavior change to existing content as prose paragraphs.}
-
-## Removals
-{Each removed feature as prose, only if relevant to a player.}
-
-# Forbidden
-
-- Protocol version numbers, network changes, JSON schema updates.
-- Internal refactors, code-level changes, performance optimizations
-  unless user-visible.
-- Bug fix lists for trivial issues.
-```
-
-### Other families: NO transform
-
-- **`person`** (People, Companies, Events, History, Community_business): texto pre-transform ya está bien (regex limpio + bio del wiki). Pasa directo a training.
-- **`tutorial`** (Tutorials, *_guides, Redstone_tutorials): formato instructivo del wiki ya es útil para training. Pasa directo.
-- **`external`** (Wikipedia bios, Notch posts, YouTube transcripts): ya limpios. Pasa directo.
-
----
-
-## Bucket-specific — Q&A
-
-El header universal de Q&A ya cubre el formato. Por familia, agregamos guía sobre **tipos de pregunta apropiados**.
+Each family-specific file appended to the universal header.
 
 ### Family: `block`
 
@@ -763,15 +250,53 @@ Question types:
   "1-3 sentences" rule).
 ```
 
----
+### Family: `version` (qa_direct route)
 
-## Reglas de dedup por padres genéricos
+```text
+This article describes a specific Minecraft version (release / snapshot /
+beta). Generate Q&A pairs about what was added or changed.
 
-### Por qué
+Question types:
+- "When was {feature} added?"
+- "What was added in {version}?"
+- "What changed in {version}?"
+- "Which edition first received {feature}?"
 
-Multi-transform aplica todos los lentes (primary + also_in) a cada artículo. Pero algunos lentes son **padres genéricos** de otros más específicos (`Blocks` es padre de `Manufactured_blocks`). Transformar un artículo dos veces con un padre y un hijo produce textos casi idénticos donde el padre es solo una versión más vaga del hijo. Esto es **redundancia tipo A** (paráfrasis pobre, no perspectiva nueva) y daña el training de modelos chicos al sobrepesar contenido duplicado.
+Do NOT generate questions about specific snapshot codes (e.g. "23w12a")
+unless the article frames them as user-facing version markers.
+```
 
-### Lentes a skipear
+## Multi-membership: how the lens is applied
+
+Each article generates N Q&A passes (N = 1 primary + count of also_in lenses
+not skipped by dedup rules below).
+
+Each pass receives:
+- **Layer 1**: universal Q&A header (always identical)
+- **Layer 2**: bucket-specific Q&A guidance for the lens's family + a "Lens-specific focus" hint when the lens is secondary
+- **Layer 3**: article text (post-hardening, from `articles_hardened.jsonl`) + meta (title, primary, current lens)
+
+Example, Bell with primary `Generated_structure_blocks` and also_in
+`[Redstone, Mechanisms, Block_entities, Utility_blocks]`:
+
+1. Pass 1 — primary `Generated_structure_blocks`: family `block` Q&A. Generates structure-spawn questions.
+2. Pass 2 — secondary `Redstone`: family `block` Q&A + lens focus "Redstone activation". Generates redstone-interaction Q&A.
+3. Pass 3 — secondary `Mechanisms`: family `block` Q&A + lens focus "Mechanics". Generates Q&A on the bell's mechanical behavior.
+4. Pass 4 — secondary `Block_entities`: family `block` Q&A + lens focus "Block entity / NBT". Generates persistent-data Q&A.
+5. Pass 5 — secondary `Utility_blocks`: family `block` Q&A + lens focus "Utility usage in gameplay".
+
+Lens `Blocks` (parent) is **skipped by dedup** (see below). 5 passes total.
+
+## Dedup rules for parent lenses
+
+### Why
+
+Multi-lens applies all of (primary + also_in). Some lenses are **generic
+parents** of more specific buckets (`Blocks` is parent of `Manufactured_blocks`).
+Q&A for an article under a parent lens produces near-duplicate pairs vs the
+specific lens — wastes corpus space and overweights the article in training.
+
+### Parent-buckets to skip
 
 ```python
 PARENT_BUCKETS = {
@@ -804,22 +329,24 @@ PARENT_BUCKETS = {
 # skip the parent lens.
 ```
 
-### Hermanos específicos en la misma categoría
+### Sibling specifics
 
-Cuando un artículo tiene múltiples cats específicas hermanas (e.g. `Animal_mobs` + `Passive_mobs` + `Tameable_mobs`), usar **solo el primary** (que ya es el más específico por la jerarquía del classifier). Los hermanos también se skipean.
+When an article has multiple specific sibling cats (e.g. `Animal_mobs` +
+`Passive_mobs` + `Tameable_mobs`), use **only the primary** (already the most
+specific by classifier hierarchy). Sibling cats are also skipped.
 
-### Lentes que SÍ se incluyen (perspectiva distinta real)
+### Lenses that DO add a new perspective
 
-Cualquier cat funcional/temática que NO sea hermano ni padre:
+Any functional/thematic cat that's not parent or sibling:
 - `Redstone`, `Mechanisms`, `Block_entities`, `Light_sources`
 - `Hazardous_blocks`, `Falling_blocks`, `Job_blocks`, `Storage`
 - `Compacted_blocks`, `Vehicles`, `Blocks_with_GUI`, `Flammable_blocks`
 - `Mob_food`, `Slabs`, `Stairs`, `Walls`
 - `10th_Anniversary`, `15th_Anniversary` (cosmetic-historical lenses)
 
-### Persistencia y trazabilidad
+### Persistence
 
-Cada artículo en el output del classifier lleva campo:
+Each article's classifier output records which lenses were skipped:
 
 ```json
 {
@@ -832,82 +359,53 @@ Cada artículo en el output del classifier lleva campo:
 }
 ```
 
-UI muestra los `skipped_lenses` en:
-- Vista detalle del artículo (Articles tab)
-- Sidebar bucket counter ("47 articles → 38 transforms, 9 dedup'd as parent")
-- Prompt Lab al elegir bucket ("Animal_mobs: 47 primary + 0 also_in [9 dedup'd]")
+UI shows skipped lenses in:
+- Article detail view (Articles tab)
+- Sidebar bucket counter ("47 articles → 38 Q&A passes, 9 dedup'd as parent")
+- Prompt Lab when picking a bucket
 
----
+## Edge cases
 
-## Multi-membership: cómo se aplica el lente
+### Article with ambiguous stat
 
-Para cada artículo, el classifier produce N transformaciones (N = 1 primary + cantidad de also_in NO skipeados).
+Some stats vary by difficulty (Zombie health: 20 normal, 22 hard). Rule:
+**use the Normal-difficulty value as default**. The Q&A may include one pair
+about the variability.
 
-Cada transformación recibe:
-- **CAPA 1**: header universal de transform (idéntico siempre).
-- **CAPA 2**: bucket-specific de la familia del lente actual + sección "Lens-specific focus" si el lente es secundario.
-- **CAPA 3**: texto pre-transform del artículo + cats originales + indicador del lente actual.
+### Article with undocumented field
 
-Ejemplo, Bell con primary `Generated_structure_blocks` y also_in `[Redstone, Mechanisms, Block_entities, Utility_blocks]`:
+If the article doesn't mention a normally-applicable field (e.g. mob without
+documented Speed), **generate Q&A only for documented facts**. Don't fabricate
+values.
 
-1. Transform 1 — lente `Generated_structure_blocks`: bucket-specific `block` + sin "Lens-specific focus" (es el primary). Output: formato block estándar enfocado en bell como bloque generado en estructuras.
-2. Transform 2 — lente `Redstone`: bucket-specific `block` + sección "Lens-specific focus: Redstone". Output: enfoca en activación por señal redstone.
-3. Transform 3 — lente `Mechanisms`: bucket-specific `block` + "Lens-specific focus: Mechanisms". Output: enfoca en activación y efecto mecánico.
-4. Transform 4 — lente `Block_entities`: bucket-specific `block` + "Lens-specific focus: Block_entities". Output: NBT, data persistente.
-5. Transform 5 — lente `Utility_blocks`: bucket-specific `block` + "Lens-specific focus: Utility_blocks". Output: uso utilitario en gameplay.
+### Article with very variable value
 
-Lente `Blocks` (padre genérico) se skipea por dedup. 5 transformaciones totales en lugar de 6.
+For random drops: use formats like `1-3` or `0-2 with Looting III`. For ranges,
+match the wiki's exact phrasing.
 
----
+### Article too short (stub <100 words)
 
-## Casos edge a manejar
+Vanilla 10-99w articles are typically filtered out before hardening (Phase 0
+in `hardening_v2.py`). If a stub somehow reaches Q&A, the model should generate
+3-5 pairs only, no padding.
 
-### Artículo con stat ambiguo
+### Article with removed-version references
 
-Algunos stats varían por dificultad (Health del Zombie: 20 normal, 22 hard). Regla: **usar el valor de Normal difficulty como default** en `## Properties`. La variabilidad se menciona en `## Details` en prosa.
+If the article mentions "removed in 1.13", emit literal Q&A like
+"In what version was {feature} removed?" → "1.13". Don't extrapolate.
 
-### Artículo con campo no documentado
+### Article with bilingual / quote in another language
 
-Si el artículo no menciona un campo que normalmente aplicaría (e.g. mob sin Speed documentado), **omitir el campo**. NO inventar valores.
+If the pre-Q&A text contains a quote in another language (e.g. Notch in Swedish),
+keep the quote in the original language with quotation marks; the Q&A answer
+can quote it directly.
 
-### Artículo con valor en rango muy variable
-
-Para drops aleatorios: usar formato `1-3` o `0-2 with Looting III`. Para spawn light: `0-15` si no hay restricción. Para experiencia: `1-3` o el rango exacto del wiki.
-
-### Artículo demasiado corto (stub <100 palabras)
-
-Hay dos opciones decididas en el plan maestro:
-- **Vanilla 10-99w**: filter manual, descartar la mayoría.
-- **Vanilla 100-499w**: solo regex, no transform.
-- Si llega a transform de todos modos, el modelo emite Overview corta + Properties incompletas + Details brief. No forzar contenido inventado.
-
-### Artículo con referencias a versiones removidas
-
-Mencionar la versión donde fue removido en `## Trivia` o `## Details` como prosa. NO inventar fechas. Si el wiki dice "removed in 1.13", emit literalmente "Removed in 1.13".
-
-### Artículo bilingüe o con texto en otro idioma
-
-Si el artículo pre-transform tiene fragmentos en otro idioma (ej: cita de Notch en sueco), **dejar la cita en idioma original entrecomillada** y traducir/explicar en prosa al lado.
-
----
-
-## Estructura de archivos del prompt system
+## File structure on Mac Mini
 
 ```
 scraper/prompt_lab/prompts/
 ├── _headers/
-│   ├── transform.txt         ← header universal Transform (~400 tokens)
-│   └── qa.txt                ← header universal Q&A (~400 tokens)
-├── transform/
-│   ├── block.txt             ← bucket-specific por familia
-│   ├── mob.txt
-│   ├── item.txt
-│   ├── plant.txt
-│   ├── mechanic.txt
-│   ├── world.txt
-│   ├── command.txt
-│   ├── crafting_recipe.txt
-│   └── version.txt
+│   └── qa.txt                  ← universal Q&A header (~400 tokens)
 └── qa/
     ├── block.txt
     ├── mob.txt
@@ -917,79 +415,45 @@ scraper/prompt_lab/prompts/
     ├── world.txt
     ├── command.txt
     ├── crafting_recipe.txt
-    └── disambiguation.txt
+    ├── disambiguation.txt
+    └── version.txt
 ```
 
-Construcción del prompt en código:
+(The deprecated transform/ subdir was removed; see archive.)
+
+Construction in code:
 
 ```python
-def build_transform_prompt(article, lens: str) -> str:
+def build_qa_prompt(article, lens: str) -> str:
     family = bucket_to_family(lens)
     is_secondary = (lens != article.primary_bucket)
-    
-    header = read_text("prompts/_headers/transform.txt")
-    specific = read_text(f"prompts/transform/{family}.txt")
-    
+
+    header = read_text("prompts/_headers/qa.txt")
+    specific = read_text(f"prompts/qa/{family}.txt")
+
     user_msg = (
         f"# Article\n\n"
         f"Title: {article.title}\n"
         f"Wiki categories: {', '.join(article.cats)}\n"
         f"Current lens: {lens} ({'secondary' if is_secondary else 'primary'})\n\n"
         f"---\n\n"
-        f"{article.text_pretransform}"
+        f"{article.text_hardened}"
     )
-    
+
     return f"{header}\n\n{specific}\n\n{user_msg}"
 ```
 
----
+## Pending validation (Phase G — see QA_GENERATION_PLAN.md)
 
-## Pendientes para validar con el tooling
+1. Iterate qa/<family>.txt prompts in Prompt Lab on pilot bucket (Animal_mobs suggested).
+2. Validate adaptive count: stub (3-5), medium (5-12), long (12-25) with tolerance.
+3. Validate lens-specific focus produces meaningfully different Q&A for primary vs secondary lenses.
+4. Validate parser tolerates minor whitespace variations.
+5. Define output schema: `{"q": "...", "a": "...", "source_title": "...", "source_bucket": "...", "lens": "..."}` proposed.
 
-Esta lista se valida en Fase 4.0 (al tener Prompt Lab funcionando) y en Fase 4.1 (pilot Animal_mobs):
+## References
 
-1. **Validar que qwen3:8b respeta el header universal**: probar con 1 artículo Animal_mobs (Cow, ~3700 palabras). Verificar:
-   - Estructura `# Name / ## Overview / ## Properties / ## Details / ## Obtaining / ## Trivia` exacta
-   - Properties en formato `Key: value`, números puros, sin emojis
-   - Sin tablas markdown
-   - Sin lenguaje promocional
-   - Idioma inglés, presente, factual
-
-2. **Validar few-shot necesidad**: si el modelo respeta el header sin few-shot examples, no agregar. Si tiene problemas (ej: emite tablas), agregar 1 ejemplo few-shot al bucket-specific.
-
-3. **Validar Q&A adaptive count**: probar con artículo corto (Stub, ~100 palabras), medio (~500), largo (Cow, 3700). El modelo debe generar 3-5, 8-10, 18-22 pairs respectivamente (con tolerancia).
-
-4. **Validar lens-specific focus**: transformar Bell bajo lente `Redstone` vs `Block_entities`. Los outputs deben enfatizar aspectos distintos en `## Details`.
-
-5. **Validar parsing**: el parser de output debe aceptar variaciones menores (espaciado, salto de línea extra) sin fallar.
-
-6. **Validar JSON output de Crafting_recipes**: el modelo emite JSON parseable sin fences markdown.
-
-7. **Iterar headers si es necesario**: si una regla universal se viola sistemáticamente, fortalecerla en el header (ej: agregar "DO NOT use unicode hearts ♥" si el modelo insiste).
-
----
-
-## Decisiones tomadas durante diseño (resumen)
-
-| Decisión | Resolución |
-|---|---|
-| Header universal compartido | Sí. 3 capas: header + bucket-specific + user message. |
-| Formato stats | `clave: número_puro`, sin tablas, sin emojis, sin unidades pegadas. |
-| Templates uniformes describibles | `# Name / ## Overview / ## Properties / ## Details / ## Obtaining / ## Trivia`. |
-| Templates especiales | Commands (estructura propia), Crafting_recipes (JSON). |
-| Multi-transform | Sí, una transformación por lente (primary + also_in). |
-| Dedup de padres | Sí. `Blocks/Mobs/Items/Entities` skipean si hay específico. Hermanos mismos skipean también. |
-| Q&A adaptive count | Sí. Modelo decide N según riqueza (3-5 / 5-12 / 12-25). 1 sola call por artículo. |
-| Q&A pre-transform | Q&A se genera del texto post-regex pre-Qwen (más detalle). |
-| Transform vs Q&A | Secuencial por bucket: primero transform, después Q&A. NO paralelo. |
-| Lenguaje | Inglés. Presente. Tono neutral, factual, enciclopédico. |
-| Few-shot examples | TBD. Probar sin first; agregar si es necesario. |
-
----
-
-## Referencias
-
-- `PHASE4_TRANSFORMATION_PLAN.md` — plan operacional completo
-- `CLASSIFIER_REDESIGN.md` — taxonomía cat-driven
-- `WIKI_DATA_CLEANING.md` — pipeline de Phases 1-3
-- `raw_data/_exploration/misclassifications.jsonl` — auditoría de 130 flags
+- `../pipeline/QA_GENERATION_PLAN.md` — strategic plan for Phase G
+- `../pipeline/PIPELINE_OVERVIEW.md` — full pipeline state
+- `../tools/PROMPT_LAB_UI.md` — dev tool UI reference
+- `../archive/PROMPT_TEMPLATES_v1_with_transform.md` — original doc with transform halves (now deprecated)

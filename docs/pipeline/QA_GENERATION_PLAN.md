@@ -1,11 +1,11 @@
 # MineGPT — Q&A Generation Plan
 
-> Plan operacional para generar Q&A pairs sobre el corpus hardened.
-> Reemplaza las secciones Q&A de `PROMPT_TEMPLATES.md` y `PHASE4_TRANSFORMATION_PLAN.md`
-> (que también contenían la half de Transform, ya deprecada 2026-04-27).
+> Plan operacional para Phase 5 (Q&A pair generation) sobre el corpus hardened.
+> Strategic plan complementing `../prompts/PROMPT_TEMPLATES.md` (which has the
+> actual prompt text per family).
 >
 > Status: planning. No ejecutado todavía.
-> Fecha: 2026-05-02
+> Última actualización: 2026-05-03
 
 ---
 
@@ -48,7 +48,8 @@ Total estimado: ~50K-110K Q&A pairs.
 
 ## Tipos de Q&A por bucket
 
-(Detalles en `PROMPT_TEMPLATES.md` secciones 644-805 y `PHASE4_TRANSFORMATION_PLAN.md` 257-410. A consolidar acá cuando se itere sobre prompts en Prompt Lab.)
+Detalles completos (universal header + per-family question types + dedup +
+multi-membership + edge cases) en `../prompts/PROMPT_TEMPLATES.md`.
 
 Resumen alto nivel por familia:
 
@@ -63,7 +64,7 @@ Resumen alto nivel por familia:
 
 ## Tooling
 
-Prompt Lab tab "Lab" (ver `PROMPT_LAB_UI.md`):
+Prompt Lab tab "Lab" (ver `../tools/PROMPT_LAB_UI.md`):
 - Bucket picker (Cmd+K), prompt editor con header read-only + bucket-specific editable
 - Modes: test_5 / test_20 / sample_50 / full
 - Phase toggle: Q&A (transform half UI sigue presente pero deprecada)
@@ -93,6 +94,7 @@ Modelo: qwen3:14b en Mac Mini (no-thinking, ~17 tokens/sec).
 
 - `project_hardening_v2.md` (memoria) — pipeline state actual
 - `project_pipeline_decisions_2026-04-27.md` (memoria) — por qué Q&A reemplaza transform
-- `PROMPT_TEMPLATES.md` — prompts originales (Q&A sections still valid)
-- `PHASE4_TRANSFORMATION_PLAN.md` — Q&A sections still valid
-- `PROMPT_LAB_UI.md` — UI tab actual
+- `../prompts/PROMPT_TEMPLATES.md` — Q&A prompt templates (universal + per-family)
+- `../tools/PROMPT_LAB_UI.md` — UI tab actual
+- `PIPELINE_OVERVIEW.md` — estado general del pipeline
+- `HARDENING_V2_RESULTS.md` — fuente de los inputs (corpus hardened)
