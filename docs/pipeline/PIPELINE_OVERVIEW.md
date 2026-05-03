@@ -3,7 +3,7 @@
 Current state of the data pipeline. Lightweight reference; canonical details
 in the per-phase docs linked below.
 
-> Last updated: 2026-05-03
+> Last updated: 2026-05-03 (v12 hardening + deprecation filter)
 > Replaces `WIKI_DATA_CLEANING.md` (now archived as `../archive/WIKI_DATA_CLEANING_v1.md`).
 
 ## Pipeline phases
@@ -12,8 +12,8 @@ in the per-phase docs linked below.
 |---|---|---|---|---|---:|
 | 1 | Filter (rule-based) | `scraper/filter.py` | ✅ done 2026-04-23 | `articles_filtered.jsonl` (10,143) | — |
 | 2 | Regex clean | `scraper/regex_clean.py` | ✅ done 2026-04-23 | `articles_cleaned.jsonl` (10,143) | 9.27M |
-| 3 | Cat-driven classifier | `scraper/explore_subgroups.py` | ✅ done 2026-04-26 | `META[]` in-memory (9 ambientes × 142 buckets) | — |
-| 4 | Hardening v2 (12-phase regex) | `scraper/hardening_v2.py` | ✅ done 2026-05-02 | `articles_hardened.jsonl` (7,135) + `articles_qa_direct.jsonl` (2,834) + `articles_dropped.jsonl` (174) | 7.62M |
+| 3 | Cat-driven classifier | `scraper/explore_subgroups.py` | ✅ done 2026-04-26, reordered 2026-05-03 (Removed_features → bottom) | `META[]` in-memory (9 ambientes × 142 buckets) | — |
+| 4 | Hardening v2 (12-phase regex + routing/dropping) | `scraper/hardening_v2.py` | ✅ done 2026-05-03 (v12) | `articles_hardened.jsonl` (6,715) + `articles_qa_direct.jsonl` (2,932) + `articles_dropped.jsonl` (496) | **7.41M** |
 | 5 | Q&A generation (Qwen) | `scraper/prompt_lab/...` (TODO) | ⏳ planned | `qa_pairs/*.jsonl` (target ~50K-110K pairs) | — |
 | 6 | Tokenize + train | `tokenizer/`, `model/` | ⏳ planned | trained model weights | — |
 
@@ -88,17 +88,38 @@ Target: ~50K-110K Q&A pairs. Tooling: Prompt Lab on Mac Mini.
 
 Stack: MLX, sentencepiece. Target model: 125-200M params on M2; up to 750M on M4.
 
-## Dataset (current real numbers)
+## Dataset (current real numbers, v12)
 
 | Source | Entries | Words | Status |
 |---|---:|---:|---|
-| Wiki main (hardened) | 7,135 | 7.62M | ready for tokenize |
-| Wiki Q&A-direct (hardened) | 2,834 | (subset of 7.62M) | ready for Q&A pipeline |
-| Wiki dropped (audit) | 174 | (negligible) | not used |
+| Wiki main (hardened v12) | **6,715** | **7.41M** | ready for tokenize |
+| Wiki Q&A-direct (hardened) | **2,932** | (subset of 7.41M) | ready for Q&A pipeline |
+| Wiki dropped (audit) | 496 | — | not used |
 | Changelogs (cleaned) | 1,270 | 2.04M | inclusion TBD |
 | External: Wikipedia bios | 17 | ~50K | ready (cleaned) |
 | External: Word of Notch posts | 294 | ~25K | ready (cleaned) |
 | External: YouTube transcripts | 4 | ~5K | ready (cleaned) |
+
+### Routing breakdown of qa_direct (2,932 articles)
+
+| Reason | Count |
+|---|---:|
+| version_changelog_page (ambiente=versions) | 2,262 |
+| disambig (Disambiguation_pages cat) | 557 |
+| set_index (Set_index_pages cat — all routed) | 113 |
+
+### Drop reasons (496 articles)
+
+| Reason | Count |
+|---|---:|
+| deprecated_content (banner-based filter) | 405 |
+| unused_content (Unused_features/biomes cat) | 50 |
+| removed_format_nbt_only (Item/Block format/) | 24 |
+| wiki_meta + wiki_meta_prefix | 21 |
+| edu_discontinued + edu_stub | 21 |
+| list_pure_enumeration | 5 |
+| history_subpage_changelog_only | 5 |
+| removed_features_only (primary cat backstop) | 1 |
 
 ## Decisions log (context for next sessions)
 
@@ -108,6 +129,10 @@ Stack: MLX, sentencepiece. Target model: 125-200M params on M2; up to 750M on M4
 - **Version-family articles routed to qa_direct** (snapshot codes are noise for training).
 - **History / Data history sections dropped wholesale** (changelog by snapshot).
 - **Infobox stats / Sounds / Data values KEPT as facts** (revived from plan v2).
+- **Removed_features as primary → drop, classifier reordered** (2026-05-03). Articles whose only meaningful cat is `Removed_features` get dropped; articles with another more specific cat (Commands, Manufactured_blocks, etc.) enter via that cat.
+- **Set_index_pages → ALL qa_direct** (2026-05-03). By design these are listing pages; useful as Q&A source ("what types of X exist?"), not as training corpus.
+- **Deprecation banner filter** (2026-05-03). Articles whose body opens with a wiki "removed/scrapped/discontinued/officially unobtainable" banner get dropped. Six banner forms, audit-derived. Tutorials exempt. 405 articles dropped.
+- **Unused_features / Unused_biomes cat → drop** (2026-05-03). 50 articles. Audit confirmed cat-only filter is safe.
 
 For detailed reasoning see memory `project_pipeline_decisions_2026-04-27.md`.
 

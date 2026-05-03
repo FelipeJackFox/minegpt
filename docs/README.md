@@ -5,7 +5,7 @@ data pipeline outputs are in `../raw_data/` (gitignored).
 
 ## Where to start
 
-- **New session?** Start with [`handoffs/SESSION_HANDOFF_2026-05-02.md`](handoffs/SESSION_HANDOFF_2026-05-02.md).
+- **New session?** Start with [`handoffs/SESSION_HANDOFF_2026-05-03.md`](handoffs/SESSION_HANDOFF_2026-05-03.md).
 - **Want pipeline state at a glance?** [`pipeline/PIPELINE_OVERVIEW.md`](pipeline/PIPELINE_OVERVIEW.md).
 - **Want the hardening pipeline final state?** [`pipeline/HARDENING_V2_RESULTS.md`](pipeline/HARDENING_V2_RESULTS.md).
 - **Working on the next phase (Q&A)?** [`pipeline/QA_GENERATION_PLAN.md`](pipeline/QA_GENERATION_PLAN.md) + [`prompts/PROMPT_TEMPLATES.md`](prompts/PROMPT_TEMPLATES.md).
@@ -44,9 +44,9 @@ docs/
 
 | Doc | Purpose |
 |---|---|
-| [`handoffs/SESSION_HANDOFF_2026-05-02.md`](handoffs/SESSION_HANDOFF_2026-05-02.md) | Most recent session handoff — read first |
+| [`handoffs/SESSION_HANDOFF_2026-05-03.md`](handoffs/SESSION_HANDOFF_2026-05-03.md) | Most recent session handoff — read first |
 | [`pipeline/PIPELINE_OVERVIEW.md`](pipeline/PIPELINE_OVERVIEW.md) | All 6 pipeline phases, status, dataset counts, decisions log |
-| [`pipeline/HARDENING_V2_RESULTS.md`](pipeline/HARDENING_V2_RESULTS.md) | Phase 4 final state (7,135 main + 2,834 qa_direct + 174 dropped, 17.77% loss, idempotent) |
+| [`pipeline/HARDENING_V2_RESULTS.md`](pipeline/HARDENING_V2_RESULTS.md) | Phase 4 final state (6,715 main + 2,932 qa_direct + 496 dropped, 20.07% loss, idempotent) |
 | [`pipeline/QA_GENERATION_PLAN.md`](pipeline/QA_GENERATION_PLAN.md) | Phase 5 plan (Q&A generation) |
 | [`prompts/PROMPT_TEMPLATES.md`](prompts/PROMPT_TEMPLATES.md) | Q&A prompt templates (universal header + per-family) |
 | [`tools/PROMPT_LAB_UI.md`](tools/PROMPT_LAB_UI.md) | Dev-tool UI (compare-mode, shortcuts, deploy hooks) |
@@ -63,7 +63,7 @@ docs/
 | `archive/CLASSIFIER_REDESIGN.md` | Proposal that's now implemented (`scraper/explore_subgroups.py` is source of truth). |
 | `archive/PHASE4_UX_DESIGN.md` | Original 3-tab Prompt Lab design, superseded by `tools/PROMPT_LAB_UI.md`. |
 | `archive/EXPLORATION_REPORT.md` | Phase 0.5 baseline audit; frozen historical record. |
-| `archive/SESSION_HANDOFF_2026-04-27.md` | Superseded by `handoffs/SESSION_HANDOFF_2026-05-02.md`. |
+| `archive/SESSION_HANDOFF_2026-04-27.md` | Superseded by `handoffs/SESSION_HANDOFF_2026-05-03.md`. |
 
 Don't update archive docs. They're snapshots of "what we used to think".
 
@@ -81,7 +81,7 @@ Don't update archive docs. They're snapshots of "what we used to think".
 | What's the current state of the data pipeline? | `pipeline/PIPELINE_OVERVIEW.md` |
 | What did hardening v2 do? | `pipeline/HARDENING_V2_RESULTS.md` |
 | How do I re-run hardening? | `pipeline/HARDENING_V2_RESULTS.md` § Re-run command |
-| What's next? | `handoffs/SESSION_HANDOFF_2026-05-02.md` § What's next |
+| What's next? | `handoffs/SESSION_HANDOFF_2026-05-03.md` § What's next |
 | What's the Q&A pipeline strategy? | `pipeline/QA_GENERATION_PLAN.md` |
 | What are the Q&A prompts? | `prompts/PROMPT_TEMPLATES.md` |
 | How does the Prompt Lab UI work? | `tools/PROMPT_LAB_UI.md` |
