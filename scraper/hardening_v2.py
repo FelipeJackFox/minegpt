@@ -266,6 +266,14 @@ INLINE_TO_SPACE_PATTERNS: list[re.Pattern] = [
         r"Bedrock Edition only|BE only|BEonly|"
         r"Bedrock and Pi editions only|edu only|upcoming)\s*\]"
     ),
+    # Interactive widget placeholder — full banner phrase, anywhere in text.
+    # The line-anchored version in LINE_STRIP_PATTERNS misses cases where
+    # the banner is inlined mid-sentence (~14 articles like Leather Boots).
+    re.compile(
+        r"An interactive widget is being loaded\.\s*"
+        r"If this does not work for you,?\s*"
+        r"please reload the page or check if JavaScript is working or enabled\.?"
+    ),
 ]
 
 # ---- Phase 5 ----
@@ -715,16 +723,89 @@ def phase_0_category_filter(art: dict) -> tuple[str, str | None]:
     title = art.get("title", "")
     wc = art.get("word_count") or 0
 
+    # Spinoff games (Story Mode, Dungeons, Legends, Earth) — out of v1 scope.
+    # MUST run before disambig/set_index routing — otherwise spinoff articles
+    # whose cats include `Disambiguation_pages` (e.g. "Story Mode:Zone")
+    # leak into qa_direct instead of being dropped. The ambiente check
+    # below adds a safety net for any spinoff article that lacks both a
+    # title-prefix and an explicit Minecraft_X cat.
+    if title.startswith(("Story Mode:", "Legends:", "Earth:", "Dungeons:")):
+        return ("drop", "spinoff_v2")
+    if any(
+        ("Story_Mode" in c) or ("Minecraft_Dungeons" in c) or
+        ("Minecraft_Legends" in c) or ("Minecraft_Earth" in c) or
+        c in {"Pages_with_Dungeons_sound_tables", "Pages_with_Legends_sound_tables", "Pages_with_Earth_sound_tables"}
+        for c in cats
+    ):
+        return ("drop", "spinoff_v2")
+
     # Disambig + Set_index pages: route ALL to qa_direct. By design these
     # are indexing pages ("X may refer to: A, B, C") with little prose value
     # for the training corpus, but they're useful Q&A sources ("what types
     # of X exist?", "what's the difference between A and B?"). Even when
     # they carry secondary cats, the article body is always a list — the
     # primary semantic intent is indexing, not domain content.
-    if "Disambiguation_pages" in cats:
+    if "Disambiguation_pages" in cats or "Achievement_disambiguation_pages" in cats:
         return ("route_qa_direct", "disambig")
     if "Set_index_pages" in cats:
         return ("route_qa_direct", "set_index")
+    # Sound data pages: audio engineering metadata tables (event IDs,
+    # subtitle keys, volume/pitch/attenuation numbers). Same pattern as
+    # Top-level_data_pages — pure technical reference, no narrative value.
+    if "Sound_data_pages" in cats:
+        return ("drop", "sound_data_page")
+
+    # Top-level data pages: NBT/JSON schema reference lists.
+    # Pure parameter enumerations with no narrative value — not useful
+    # for Q&A generation. Drop entirely.
+    if "Top-level_data_pages" in cats:
+        return ("drop", "top_level_data_page")
+
+    # April Fools / joke content — not canon Minecraft, not useful for Q&A.
+    if "Joke_features" in cats:
+        return ("drop", "joke_content")
+
+    # Skin packs — cosmetic DLC listings, no gameplay knowledge value.
+    if "Skin_packs" in cats:
+        return ("drop", "skin_pack")
+
+    # Removed blocks — historical content not in current game.
+    if "Removed_blocks" in cats:
+        return ("drop", "removed_blocks")
+
+    # Texture atlases — JSON config / asset listings, not narrative content.
+    # Drop unconditionally regardless of other cats (per user spec).
+    if "Texture_atlases" in cats:
+        return ("drop", "texture_atlas")
+
+    # NBT / protocol / data-value reference subpages — pure technical
+    # schemas with no narrative value. Identified by title prefix
+    # (same prefix list used by explore_subgroups.TECH_TITLE_PREFIXES).
+    # Conceptual tech articles (JSON, NBT format, .minecraft, Mob AI)
+    # are NOT caught here — they enter the bucket via category, not prefix.
+    if title.startswith((
+        "Data component format/", "Data component predicate/",
+        "Sounds.json/", "Bedrock Edition data values",
+        "Java Edition data values", "Bedrock Edition protocol",
+        "Java Edition protocol/", "Bedrock Edition level format/",
+        "Java Edition level format/", "Block behaviour",
+    )):
+        return ("drop", "tech_reference_subpage")
+
+    # Character Creator / Configured feature subpages — cosmetic listings
+    # and JSON config references with no narrative content.
+    if title.startswith(("Character Creator/", "Configured feature/")):
+        return ("drop", "cosmetic_or_config_subpage")
+
+    # Block states reference subpages — `Title/BS` suffix marks pure
+    # state-metadata tables (same articles assigned to Block_states_reference
+    # bucket by the classifier).
+    if title.endswith("/BS"):
+        return ("drop", "block_states_reference")
+
+    # Interactive tools / calculators — external widget references, not content.
+    if "Interactive_tools_and_calculators" in cats:
+        return ("drop", "interactive_tool")
 
     # Title-prefixed wiki meta.
     if title.startswith(("File:", "Template:", "Help:", "Minecraft Wiki:")):
@@ -759,6 +840,12 @@ def phase_0_category_filter(art: dict) -> tuple[str, str | None]:
         primary_bucket = None
     if ambiente == "versions":
         return ("route_qa_direct", "version_changelog_page")
+
+    # Spinoff safety net via ambiente — title-prefix and cats checks
+    # already ran at the top of this function. This catches anything the
+    # classifier identifies as spinoff that lacked both signals.
+    if ambiente == "spinoff":
+        return ("drop", "spinoff_v2")
 
     # ---- Deprecation filter (banners + cats) ----
     # Articles whose ENTIRE body describes content that has been removed,

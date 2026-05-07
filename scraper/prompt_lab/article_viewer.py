@@ -48,6 +48,7 @@ ARTICLE_VERSIONS = [
     {"name": "removed",     "phase": 0, "file": "articles_removed.jsonl",    "label": "removed"},
     {"name": "hardened",    "phase": 4, "file": "articles_hardened.jsonl",   "label": "hardened v2"},
     {"name": "qa_direct",   "phase": 4, "file": "articles_qa_direct.jsonl",  "label": "qa direct"},
+    {"name": "dropped",     "phase": 4, "file": "articles_dropped.jsonl",    "label": "dropped"},
     {"name": "transformed", "phase": 5, "file": "articles_transformed.jsonl","label": "transformed"},
     {"name": "qa",          "phase": 6, "file": "articles_qa.jsonl",         "label": "Q&A"},
 ]
@@ -94,6 +95,7 @@ OFFSETS: dict[str, dict[str, tuple[int, int]]] = {}  # version -> title -> (offs
 WORD_COUNTS: dict[str, dict[str, int]] = {}  # version -> title -> word_count
 REMOVAL_REASONS: dict[str, str] = {}         # title -> reason (from articles_removed.jsonl)
 AVAILABLE_VERSIONS: list[str] = []           # versions whose file exists
+ROUTE_COUNTS: dict[str, int] = {}            # route -> article count (global, computed at index time)
 # External (non-wiki) entries are stored separately for I/O — single source, single version.
 # Mapping: title -> (file_path, byte_offset, byte_length)
 EXTERNAL_OFFSETS: dict[str, tuple[str, int, int]] = {}
@@ -122,6 +124,19 @@ def _scan_offsets(path: Path) -> tuple[dict[str, tuple[int, int]], dict[str, int
 def _set_progress(stage: str, p: float) -> None:
     INDEX_STATUS["stage"] = stage
     INDEX_STATUS["progress"] = p
+
+
+def _route_for(title: str) -> str | None:
+    """Return pipeline route for a title based on which output file it appears in."""
+    if title in REMOVAL_REASONS:
+        return "removed"
+    if title in OFFSETS.get("hardened", {}):
+        return "main_corpus"
+    if title in OFFSETS.get("qa_direct", {}):
+        return "qa_direct"
+    if title in OFFSETS.get("dropped", {}):
+        return "dropped"
+    return None
 
 
 def build_index() -> None:
@@ -263,6 +278,14 @@ def build_index() -> None:
             for t in tiers:
                 tiers[t].sort(key=str.lower)
 
+        # 5. Compute global route counts
+        counts: dict[str, int] = {"main_corpus": 0, "qa_direct": 0, "dropped": 0, "removed": 0}
+        for title in META:
+            r = _route_for(title)
+            if r in counts:
+                counts[r] += 1
+        ROUTE_COUNTS.update(counts)
+
         INDEX_STATUS["ready"] = True
         INDEX_STATUS["progress"] = 1.0
         INDEX_STATUS["stage"] = "done"
@@ -311,12 +334,20 @@ def get_groups() -> list[dict]:
         for titles in tiers.values():
             for title in titles:
                 words += META[title]["word_count"]
+        # Route breakdown for the sidebar route-bar
+        route_counts: dict[str, int] = {"main_corpus": 0, "qa_direct": 0, "dropped": 0, "removed": 0}
+        for tier_titles in tiers.values():
+            for t in tier_titles:
+                r = _route_for(t)
+                if r in route_counts:
+                    route_counts[r] += 1
         stats[g] = {
             "name": g,
             "count": total,
             "secondary_count": sec_total,
             "words": words,
             "tiers": tier_counts,
+            "route_counts": route_counts,
         }
 
     # Threshold: a bucket appears in sidebar only if it has primary>=1 OR secondary>=30.
@@ -453,6 +484,7 @@ def list_articles(
     sort: str = "alpha",
     offset: int = 0,
     limit: int = 200,
+    route: str | None = None,
 ) -> dict:
     """List articles in a group (optionally filtered by tier or title query)."""
     if not INDEX_STATUS["ready"]:
@@ -475,6 +507,10 @@ def list_articles(
     if q:
         ql = q.lower()
         titles = [t for t in titles if ql in t.lower()]
+
+    # Filter by pipeline route
+    if route:
+        titles = [t for t in titles if _route_for(t) == route]
 
     # Sort
     if sort == "delta":
@@ -518,6 +554,7 @@ def list_articles(
             "delta": delta,
             "is_external": m.get("is_external", False),
             "post_date": m.get("post_date"),
+            "route": _route_for(t),
         })
 
     return {"items": items, "total": total, "ready": True}
@@ -654,6 +691,11 @@ def peek(title: str, max_chars: int = 240) -> str | None:
     return (d.get("text") or "")[:max_chars]
 
 
+def get_route_counts() -> dict:
+    """Return global counts per pipeline route."""
+    return dict(ROUTE_COUNTS)
+
+
 def get_versions_meta() -> list[dict]:
     """Return version definitions including which ones have files on disk."""
     out = []
@@ -680,7 +722,9 @@ import time
 from threading import Lock
 
 FLAG_LOG_PATH = ROOT / "raw_data" / "_exploration" / "misclassifications.jsonl"
+CONTENT_FLAG_LOG_PATH = ROOT / "raw_data" / "_exploration" / "content_flags.jsonl"
 _flag_lock = Lock()
+_content_flag_lock = Lock()
 
 
 def log_flag(entry: dict) -> dict:
@@ -710,6 +754,60 @@ def list_flags() -> list[dict]:
         return []
     out = []
     with FLAG_LOG_PATH.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+    return out
+
+
+def log_content_flag(entry: dict) -> dict:
+    """Append a content-issue flag (body observation) to the log. Returns the saved entry.
+
+    Saves rich context so the developer can later grep / read the file
+    to find regex patterns or manual fixes:
+      - title, group, categories, word_count, tier
+      - route (main_corpus / qa_direct / dropped / removed)
+      - text_preview (first 500 chars of cleaned body)
+      - comment (the user's observation about the body)
+    """
+    CONTENT_FLAG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    title = entry.get("title", "")
+    m = META.get(title) or {}
+    # Pull a short text preview from the cleaned version for context.
+    preview = ""
+    try:
+        d = _read_at("cleaned", title) if not m.get("is_external") else _read_external_at(title)
+        if d:
+            preview = (d.get("text") or "")[:500]
+    except Exception:
+        pass
+    saved = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "title": title,
+        "group": m.get("group"),
+        "categories": m.get("categories", []),
+        "word_count": m.get("word_count"),
+        "tier": m.get("tier"),
+        "route": _route_for(title),
+        "text_preview": preview,
+        "comment": (entry.get("comment") or "").strip() or None,
+    }
+    with _content_flag_lock:
+        with CONTENT_FLAG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(saved, ensure_ascii=False) + "\n")
+    return saved
+
+
+def list_content_flags() -> list[dict]:
+    if not CONTENT_FLAG_LOG_PATH.exists():
+        return []
+    out = []
+    with CONTENT_FLAG_LOG_PATH.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:

@@ -161,6 +161,37 @@
     .art-row.secondary { border-left-style: dashed; border-left-color: rgba(59,130,246,0.4); }
     .art-row.secondary.active { border-left-style: solid; }
 
+    /* Pipeline route — left border colors (overridden by .active) */
+    .art-row.route-corpus   { border-left-color: #22c55e; }
+    .art-row.route-qa       { border-left-color: #5b8ef0; }
+    .art-row.route-dropped  { border-left-color: #f97316; }
+    .art-row.route-removed  { border-left-color: #6b7280; }
+    .art-row.route-corpus.secondary  { border-left-color: rgba(34,197,94,0.5); }
+    .art-row.route-qa.secondary      { border-left-color: rgba(91,142,240,0.5); }
+    .art-row.route-dropped.secondary { border-left-color: rgba(249,115,22,0.5); }
+    .art-row.route-removed.secondary { border-left-color: rgba(107,114,128,0.5); }
+
+    /* Route strip chips */
+    .route-chip {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      padding: 0.3rem 0.65rem;
+      border-radius: 9999px;
+      font-size: 0.65rem;
+      font-family: "Fira Code", monospace;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 100ms;
+      white-space: nowrap;
+      min-height: 22px;
+    }
+    .route-chip:hover { filter: brightness(1.2); }
+    .route-chip.active { filter: brightness(1.35); border-color: currentColor; }
+    .route-chip-corpus  { background: rgba(34,197,94,0.12);  color: #86efac; }
+    .route-chip-qa      { background: rgba(91,142,240,0.12); color: #93c5fd; }
+    .route-chip-dropped { background: rgba(249,115,22,0.12); color: #fdba74; }
+    .route-chip-removed { background: rgba(107,114,128,0.12);color: #9ca3af; }
+    .route-chip-all     { background: rgba(148,163,184,0.10);color: #cbd5e1; }
+
     /* Group sidebar */
     .group-row {
       display: flex;
@@ -241,6 +272,23 @@
       margin-top: 2px;
     }
     .tier-bar > div { height: 100%; }
+
+    /* Route proportion bar — reuses tier-bar layout, uses route colors */
+    .route-bar {
+      display: flex;
+      height: 2px;
+      width: 100%;
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 3px;
+      opacity: 0.7;
+    }
+    .route-bar > div { height: 100%; }
+    .route-bar-corpus  { background: #22c55e; }
+    .route-bar-qa      { background: #5b8ef0; }
+    .route-bar-dropped { background: #f97316; }
+    .route-bar-removed { background: #6b7280; }
+    .route-bar-empty   { background: #334155; flex: 1; }
 
     /* =====================================================
        Phase 4.0 — Design tokens
@@ -1268,31 +1316,49 @@
             </div>
             <div x-show="articles.expandedSuperCats[sc.name]" class="ml-2">
               <template x-for="g in sc.subgroups" :key="g.name">
-                <div class="group-row"
-                     :class="[
-                       articles.activeGroup === g.name && !articles.activeTier ? 'active' : '',
-                       sc.name === 'discardable' || sc.name === 'extras' ? 'discardable-cat' : ''
-                     ]"
-                     @click="selectGroup(g.name)">
-                  <span class="flex-1 truncate" x-text="g.name"></span>
-                  <!-- Per-bucket T / Q&A status badges -->
-                  <template x-if="bucketBadges(g.name)">
-                    <span class="flex items-center gap-0.5 mr-1">
-                      <span class="status" :class="`status-${bucketBadges(g.name).t.kind}`"
-                            :title="bucketBadges(g.name).t.title"
-                            style="padding: 0 4px; font-size: 9px; line-height: 13px;">
-                        <span class="status-icon" x-text="bucketBadges(g.name).t.icon" style="font-size: 9px;"></span>
+                <div>
+                  <div class="group-row"
+                       :class="[
+                         articles.activeGroup === g.name && !articles.activeTier ? 'active' : '',
+                         sc.name === 'discardable' || sc.name === 'extras' ? 'discardable-cat' : '',
+                         g.route_counts && g.route_counts.main_corpus === 0 ? 'opacity-50' : '',
+                       ]"
+                       @click="selectGroup(g.name)">
+                    <span class="flex-1 truncate" x-text="g.name"></span>
+                    <!-- Per-bucket T / Q&A status badges -->
+                    <template x-if="bucketBadges(g.name)">
+                      <span class="flex items-center gap-0.5 mr-1">
+                        <span class="status" :class="`status-${bucketBadges(g.name).t.kind}`"
+                              :title="bucketBadges(g.name).t.title"
+                              style="padding: 0 4px; font-size: 9px; line-height: 13px;">
+                          <span class="status-icon" x-text="bucketBadges(g.name).t.icon" style="font-size: 9px;"></span>
+                        </span>
+                        <span class="status" :class="`status-${bucketBadges(g.name).q.kind}`"
+                              :title="bucketBadges(g.name).q.title"
+                              style="padding: 0 4px; font-size: 9px; line-height: 13px;">
+                          <span class="status-icon" x-text="bucketBadges(g.name).q.icon" style="font-size: 9px;"></span>
+                        </span>
                       </span>
-                      <span class="status" :class="`status-${bucketBadges(g.name).q.kind}`"
-                            :title="bucketBadges(g.name).q.title"
-                            style="padding: 0 4px; font-size: 9px; line-height: 13px;">
-                        <span class="status-icon" x-text="bucketBadges(g.name).q.icon" style="font-size: 9px;"></span>
-                      </span>
-                    </span>
-                  </template>
-                  <span class="text-xs font-mono text-muted" x-text="g.count.toLocaleString()"></span>
-                  <template x-if="g.secondary_count > 0">
-                    <span class="text-[0.65rem] font-mono text-accent/60" :title="g.secondary_count + ' articles also in this lens (primary elsewhere)'" x-text="'+' + g.secondary_count"></span>
+                    </template>
+                    <span class="text-xs font-mono"
+                          :class="g.route_counts && g.route_counts.main_corpus === 0 ? 'text-muted/50' : 'text-muted'"
+                          x-text="g.count.toLocaleString()"></span>
+                    <template x-if="g.secondary_count > 0">
+                      <span class="text-[0.65rem] font-mono text-accent/60" :title="g.secondary_count + ' articles also in this lens (primary elsewhere)'" x-text="'+' + g.secondary_count"></span>
+                    </template>
+                  </div>
+                  <!-- Route proportion bar -->
+                  <template x-if="g.route_counts">
+                    <div class="route-bar px-1.5"
+                         :title="`corpus ${g.route_counts.main_corpus} · qa ${g.route_counts.qa_direct} · dropped ${g.route_counts.dropped} · removed ${g.route_counts.removed}`">
+                      <template x-if="g.route_counts.main_corpus === 0 && g.route_counts.qa_direct === 0 && g.route_counts.dropped === 0 && g.route_counts.removed === 0">
+                        <div class="route-bar-empty"></div>
+                      </template>
+                      <div x-show="g.route_counts.main_corpus > 0"  class="route-bar-corpus"  :style="`flex-grow: ${g.route_counts.main_corpus}`"></div>
+                      <div x-show="g.route_counts.qa_direct > 0"    class="route-bar-qa"      :style="`flex-grow: ${g.route_counts.qa_direct}`"></div>
+                      <div x-show="g.route_counts.dropped > 0"      class="route-bar-dropped"  :style="`flex-grow: ${g.route_counts.dropped}`"></div>
+                      <div x-show="g.route_counts.removed > 0"      class="route-bar-removed"  :style="`flex-grow: ${g.route_counts.removed}`"></div>
+                    </div>
                   </template>
                 </div>
               </template>
@@ -1307,7 +1373,17 @@
       <div class="px-3 py-2 border-b border-border/60 flex flex-col gap-1.5">
         <div class="flex items-center gap-2 text-xs">
           <span class="text-muted truncate flex-1" x-text="articles.activeGroup || 'No group selected'"></span>
-          <span class="text-muted font-mono" x-text="articles.list.total ? articles.list.total.toLocaleString() : ''"></span>
+          <template x-if="articles.routeFilter">
+            <span class="route-chip text-[0.6rem] px-1.5 py-0.5"
+                  :class="{
+                    'route-chip-corpus':  articles.routeFilter === 'main_corpus',
+                    'route-chip-qa':      articles.routeFilter === 'qa_direct',
+                    'route-chip-dropped': articles.routeFilter === 'dropped',
+                    'route-chip-removed': articles.routeFilter === 'removed',
+                  }"
+                  x-text="articles.routeFilter.replace('main_corpus','corpus')"></span>
+          </template>
+          <span class="text-muted font-mono" x-text="articles.list.total ? articles.list.total.toLocaleString() : (articles.activeGroup ? '0' : '')"></span>
         </div>
         <div class="flex items-center gap-1">
           <input x-ref="titleFilter" x-model="articles.titleFilter" @input.debounce.250="loadArticleList()"
@@ -1331,6 +1407,40 @@
           <option value="1000-4999">1000-4999w</option>
           <option value="5000+">5000+w</option>
         </select>
+
+        <!-- Pipeline destination strip -->
+        <div class="flex items-center gap-1 flex-wrap">
+          <button class="route-chip route-chip-all"
+                  :class="{ active: articles.routeFilter === null }"
+                  @click="articles.routeFilter = null; loadArticleList()"
+                  :title="articles.routeFilter ? 'Clear route filter' : 'Showing all routes'">
+            <span x-text="articles.routeFilter ? '✕' : '●'"></span> all
+          </button>
+          <button class="route-chip route-chip-corpus"
+                  :class="{ active: articles.routeFilter === 'main_corpus' }"
+                  @click="articles.routeFilter = articles.routeFilter === 'main_corpus' ? null : 'main_corpus'; loadArticleList()"
+                  :title="articles.routeFilter === 'main_corpus' ? 'Click to remove filter' : 'Corpus: training + Q&A (' + (articles.routeCounts.main_corpus||0).toLocaleString() + ' total)'">
+            <span>●</span> corpus <span class="opacity-60" x-text="(articles.routeCounts.main_corpus||0).toLocaleString()"></span>
+          </button>
+          <button class="route-chip route-chip-qa"
+                  :class="{ active: articles.routeFilter === 'qa_direct' }"
+                  @click="articles.routeFilter = articles.routeFilter === 'qa_direct' ? null : 'qa_direct'; loadArticleList()"
+                  :title="articles.routeFilter === 'qa_direct' ? 'Click to remove filter' : 'QA direct: Q&A only, not corpus (' + (articles.routeCounts.qa_direct||0).toLocaleString() + ' total)'">
+            <span>●</span> qa <span class="opacity-60" x-text="(articles.routeCounts.qa_direct||0).toLocaleString()"></span>
+          </button>
+          <button class="route-chip route-chip-dropped"
+                  :class="{ active: articles.routeFilter === 'dropped' }"
+                  @click="articles.routeFilter = articles.routeFilter === 'dropped' ? null : 'dropped'; loadArticleList()"
+                  :title="articles.routeFilter === 'dropped' ? 'Click to remove filter' : 'Dropped: excluded from all pipelines (' + (articles.routeCounts.dropped||0).toLocaleString() + ' total)'">
+            <span>●</span> dropped <span class="opacity-60" x-text="(articles.routeCounts.dropped||0).toLocaleString()"></span>
+          </button>
+          <button class="route-chip route-chip-removed"
+                  :class="{ active: articles.routeFilter === 'removed' }"
+                  @click="articles.routeFilter = articles.routeFilter === 'removed' ? null : 'removed'; loadArticleList()"
+                  :title="articles.routeFilter === 'removed' ? 'Click to remove filter' : 'Removed: filtered in Phase 1 (' + (articles.routeCounts.removed||0).toLocaleString() + ' total)'">
+            <span>●</span> removed <span class="opacity-60" x-text="(articles.routeCounts.removed||0).toLocaleString()"></span>
+          </button>
+        </div>
       </div>
 
       <div class="flex-1 overflow-auto scrollbar" x-ref="articleListEl">
@@ -1340,7 +1450,13 @@
           </div>
         </template>
         <template x-if="articles.activeGroup && articles.list.items.length === 0">
-          <div class="px-4 py-8 text-xs text-muted">No articles match this filter.</div>
+          <div class="px-4 py-8 text-xs text-muted text-center space-y-1">
+            <div>No articles match this filter.</div>
+            <template x-if="articles.routeFilter">
+              <div class="text-[0.65rem] opacity-60"
+                   x-text="'This group has no ' + articles.routeFilter.replace('main_corpus','corpus') + ' articles — the ' + (articles.routeCounts[articles.routeFilter]||0).toLocaleString() + ' total are in other groups.'"></div>
+            </template>
+          </div>
         </template>
         <template x-for="(it, idx) in articles.list.items" :key="it.title">
           <div class="art-row"
@@ -1348,7 +1464,11 @@
                  articles.activeTitle === it.title ? 'active' : '',
                  it.removal_reason ? 'removed' : '',
                  ['wiki_meta','disambiguation_meta','joke','other','redstone_schema'].includes(it.group) ? 'discardable' : '',
-                 it.is_primary_here === false ? 'secondary' : ''
+                 it.is_primary_here === false ? 'secondary' : '',
+                 it.route === 'main_corpus' ? 'route-corpus' : '',
+                 it.route === 'qa_direct'   ? 'route-qa'     : '',
+                 it.route === 'dropped'     ? 'route-dropped': '',
+                 it.route === 'removed'     ? 'route-removed': '',
                ]"
                @click="selectArticle(it.title)"
                @mouseenter="schedulePeek(it.title)"
@@ -1362,6 +1482,15 @@
               </div>
               <div class="text-xs text-muted font-mono flex items-center gap-2">
                 <span x-text="it.word_count + 'w'"></span>
+                <template x-if="it.route === 'qa_direct'">
+                  <span class="text-[0.6rem] opacity-50" style="color:#5b8ef0" title="qa direct">·qa</span>
+                </template>
+                <template x-if="it.route === 'dropped'">
+                  <span class="text-[0.6rem] opacity-50" style="color:#f97316" title="dropped from pipeline">×</span>
+                </template>
+                <template x-if="it.route === 'removed'">
+                  <span class="text-[0.6rem] opacity-50" style="color:#6b7280" title="removed in phase 1">–</span>
+                </template>
                 <template x-if="it.is_primary_here === false">
                   <span class="text-accent/60 text-[0.65rem]" x-text="'@'+it.group"></span>
                 </template>
@@ -1434,6 +1563,7 @@
                       :class="articles.compareMode ? 'text-accent' : 'text-muted hover:text-white'"
                       class="p-1.5 rounded transition text-xs" title="Compare (c)">compare</button>
               <button @click="openFlagModal()" class="text-warn hover:text-yellow-300 p-1.5 rounded transition text-xs" title="Flag misclassification (f)">⚑ flag</button>
+              <button @click="openContentFlagModal()" class="text-accent hover:text-blue-300 p-1.5 rounded transition text-xs" title="Flag content issue — comment about body">📝 content</button>
             </div>
 
             <!-- Pipeline stepper + version pills -->
@@ -1736,6 +1866,62 @@
         <button @click="closeFlagModal()" class="px-3 py-1.5 text-xs rounded-md text-muted hover:text-white transition">Cancel</button>
         <span class="text-xs text-muted ml-auto" x-show="articles.flag.lastSaved">
           Saved to <code>misclassifications.jsonl</code>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ Content flag modal ============================================================ -->
+  <div x-show="articles.contentFlag.open" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center" style="background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);" @click.self="closeContentFlagModal()" @keydown.window.escape="closeContentFlagModal()">
+    <div class="bg-bg-surface border border-border/60 rounded-lg w-full max-w-lg p-5 space-y-3" @click.stop>
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-semibold flex items-center gap-2"><span class="text-accent">📝</span> Flag content issue</h3>
+        <button @click="closeContentFlagModal()" class="text-muted hover:text-white p-1">×</button>
+      </div>
+
+      <div class="text-xs space-y-2">
+        <div><span class="text-muted">Article:</span> <span class="font-mono" x-text="articles.contentFlag.title"></span></div>
+        <div class="flex items-center gap-3 flex-wrap">
+          <span><span class="text-muted">Group:</span> <span class="font-mono" x-text="articles.contentFlag.currentGroup || '—'"></span></span>
+          <span><span class="text-muted">Words:</span> <span class="font-mono" x-text="articles.contentFlag.wc || '—'"></span></span>
+          <span><span class="text-muted">Route:</span>
+            <span class="font-mono"
+                  :class="{
+                    'text-success': articles.contentFlag.route === 'main_corpus',
+                    'text-accent':  articles.contentFlag.route === 'qa_direct',
+                    'text-warn':    articles.contentFlag.route === 'dropped',
+                    'text-muted':   !articles.contentFlag.route || articles.contentFlag.route === 'removed',
+                  }"
+                  x-text="articles.contentFlag.route || '—'"></span>
+          </span>
+        </div>
+        <div>
+          <span class="text-muted">Categories:</span>
+          <div class="flex flex-wrap gap-1 mt-1">
+            <template x-for="c in filteredCats(articles.contentFlag.cats)" :key="c">
+              <span class="px-1.5 py-0.5 rounded bg-bg-raised/50 border border-border/40 text-[0.65rem] font-mono" x-text="c"></span>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <div class="space-y-1">
+        <label class="text-xs text-muted">Comment about the body content (required)</label>
+        <textarea x-model="articles.contentFlag.comment" rows="4"
+                  placeholder="e.g. Body has 'An interactive widget...' banner mid-paragraph; or repeated table headers; or weird placeholder text 'TODO write description'"
+                  class="w-full bg-bg border border-border/60 rounded-md px-2 py-1.5 text-sm"></textarea>
+        <div class="text-[0.65rem] text-muted/70">First 500 chars of cleaned body are saved automatically as context.</div>
+      </div>
+
+      <div class="flex items-center gap-2 pt-2">
+        <button @click="submitContentFlag()" :disabled="articles.contentFlag.submitting"
+                class="px-3 py-1.5 text-xs rounded-md font-semibold bg-accent/20 text-accent hover:bg-accent/30 disabled:opacity-50 transition">
+          <span x-show="!articles.contentFlag.submitting">Save content flag</span>
+          <span x-show="articles.contentFlag.submitting">Saving...</span>
+        </button>
+        <button @click="closeContentFlagModal()" class="px-3 py-1.5 text-xs rounded-md text-muted hover:text-white transition">Cancel</button>
+        <span class="text-xs text-muted ml-auto" x-show="articles.contentFlag.lastSaved">
+          Saved to <code>content_flags.jsonl</code>
         </span>
       </div>
     </div>
@@ -2578,6 +2764,8 @@
           tierFilter: '',
           titleFilter: '',
           sort: 'alpha',
+          routeFilter: null,
+          routeCounts: { main_corpus: 0, qa_direct: 0, dropped: 0, removed: 0 },
           list: { items: [], total: 0, ready: false },
           activeTitle: null,
           activeVersion: 'cleaned',
@@ -2608,6 +2796,8 @@
           indexPollHandle: null,
           // flag modal
           flag: { open: false, title: '', currentGroup: '', suggested: '', note: '', cats: [], submitting: false, lastSaved: null },
+          // content flag modal (body issue / observation)
+          contentFlag: { open: false, title: '', currentGroup: '', cats: [], wc: 0, route: null, comment: '', submitting: false, lastSaved: null },
           // meta cat filter (regex from backend)
           metaRegex: null,
           showMetaCats: false,
@@ -3402,6 +3592,9 @@
                   this.articles.indexPollHandle = null;
                 }
                 await this.loadGroups();
+                fetch('/api/articles/route_counts').then(r => r.json()).then(d => {
+                  this.articles.routeCounts = d;
+                }).catch(() => {});
               }
             } catch (e) { /* ignore */ }
           };
@@ -3456,6 +3649,7 @@
           this.articles.activeGroup = name;
           this.articles.titleFilter = '';
           this.articles.tierFilter = '';
+          this.articles.routeFilter = null;
           this.articles.activeTitle = null;
           this.articles.current = null;
           await this.loadArticleList();
@@ -3482,6 +3676,7 @@
           });
           if (this.articles.tierFilter) params.set('tier', this.articles.tierFilter);
           if (this.articles.titleFilter) params.set('q', this.articles.titleFilter);
+          if (this.articles.routeFilter) params.set('route', this.articles.routeFilter);
           const r = await fetch('/api/articles/list?' + params.toString());
           this.articles.list = await r.json();
         },
@@ -3872,6 +4067,49 @@
             this.showToast('Flag failed', 'error');
           } finally {
             this.articles.flag.submitting = false;
+          }
+        },
+
+        // ===== Content flag modal =====
+        openContentFlagModal() {
+          if (!this.articles.activeTitle) return;
+          const item = this.articles.list.items.find(it => it.title === this.articles.activeTitle);
+          this.articles.contentFlag.title = this.articles.activeTitle;
+          this.articles.contentFlag.currentGroup = this.articles.meta.group || (this.articles.current && this.articles.current.group) || '';
+          this.articles.contentFlag.cats = (this.articles.current && this.articles.current.categories) || [];
+          this.articles.contentFlag.wc = (this.articles.current && this.articles.current.word_count) || 0;
+          this.articles.contentFlag.route = item?.route || null;
+          this.articles.contentFlag.comment = '';
+          this.articles.contentFlag.lastSaved = null;
+          this.articles.contentFlag.open = true;
+        },
+        closeContentFlagModal() {
+          this.articles.contentFlag.open = false;
+        },
+        async submitContentFlag() {
+          if (!(this.articles.contentFlag.comment || '').trim()) {
+            this.showToast('Please add a comment first', 'error');
+            return;
+          }
+          this.articles.contentFlag.submitting = true;
+          try {
+            const r = await fetch('/api/articles/content_flag', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: this.articles.contentFlag.title,
+                comment: this.articles.contentFlag.comment,
+              }),
+            });
+            if (!r.ok) throw new Error('content flag failed');
+            const d = await r.json();
+            this.articles.contentFlag.lastSaved = d.saved;
+            this.showToast('Content flag saved');
+            setTimeout(() => this.closeContentFlagModal(), 600);
+          } catch (e) {
+            this.showToast('Content flag failed', 'error');
+          } finally {
+            this.articles.contentFlag.submitting = false;
           }
         },
 

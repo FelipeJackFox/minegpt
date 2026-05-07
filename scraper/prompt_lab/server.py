@@ -1296,8 +1296,14 @@ def api_articles_list(
     sort: str = "alpha",
     offset: int = 0,
     limit: int = 200,
+    route: str | None = None,
 ):
-    return article_viewer.list_articles(group, tier, q, sort, offset, limit)
+    return article_viewer.list_articles(group, tier, q, sort, offset, limit, route)
+
+
+@app.get("/api/articles/route_counts")
+def api_articles_route_counts():
+    return article_viewer.get_route_counts()
 
 
 @app.get("/api/articles/get")
@@ -1341,6 +1347,22 @@ def api_articles_flag(body: FlagRequest):
 @app.get("/api/articles/flags")
 def api_articles_flags():
     return {"flags": article_viewer.list_flags()}
+
+
+class ContentFlagRequest(BaseModel):
+    title: str
+    comment: str | None = None
+
+
+@app.post("/api/articles/content_flag")
+def api_articles_content_flag(body: ContentFlagRequest):
+    saved = article_viewer.log_content_flag(body.dict())
+    return {"ok": True, "saved": saved}
+
+
+@app.get("/api/articles/content_flags")
+def api_articles_content_flags():
+    return {"flags": article_viewer.list_content_flags()}
 
 
 # ============================================================
